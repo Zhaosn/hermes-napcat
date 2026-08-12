@@ -25,6 +25,20 @@ QQ客户端 ──── NapCat ──WS拨入──▶ hermes-napcat（插件�
 
 ---
 
+## 上游与来源
+
+本仓库 **fork 自** [shubyi/hermes-napcat](https://github.com/shubyi/hermes-napcat)。
+
+- **上游（shubyi/hermes-napcat）**：以"打补丁进 Hermes 源码树"的方式安装 NapCat
+  适配器（向 `gateway/`、`tools/`、`toolsets.py` 等注入文件）。
+- **本 fork（plugin 版）**：把同一套 QQ / NapCat 集成重写为**标准 Hermes 插件**
+  （`~/.hermes/plugins/napcat/`），零核心源码改动，升级 Hermes 免维护，走官方插件系统安装。
+
+代码谱系：`main`（本 fork 的插件版）提交历史即包含上游全部提交；上游原版另存于
+`upstream-main` 分支，可对照 diff。
+
+---
+
 ## 功能特性
 
 - **群聊 & 私聊** — 群聊 @机器人，私聊直接发消息

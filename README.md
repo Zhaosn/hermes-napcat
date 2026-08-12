@@ -25,6 +25,22 @@ QQ App ──── NapCat ──WS(dial in)──▶ hermes-napcat (plugin) ─
 
 ---
 
+## Origin
+
+This repository is a **fork** of [shubyi/hermes-napcat](https://github.com/shubyi/hermes-napcat).
+
+- **Upstream (shubyi/hermes-napcat)** installs the NapCat adapter by *patching the
+  Hermes source tree* (injecting files into `gateway/`, `tools/`, `toolsets.py`, …).
+- **This fork** reimplements the same QQ / NapCat integration as a **standard Hermes
+  plugin** (`~/.hermes/plugins/napcat/`) — zero core-source changes, survives Hermes
+  upgrades, installs via the official plugin system.
+
+Lineage: `main` (this fork's plugin version) carries the full upstream history as
+ancestors; the pristine upstream code is kept on the `upstream-main` branch for
+diffing.
+
+---
+
 ## Features
 
 - **Group & DM** — @mention in groups; direct message for private chats
