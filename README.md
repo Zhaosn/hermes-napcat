@@ -68,8 +68,18 @@ diffing.
 
 ### 1. Install the package
 
+> ⚠️ This fork's **plugin version (0.3.0)** is installed from GitHub. The
+> `hermes-napcat` package on PyPI is still the old **0.2.x patch-based version**
+> (it patches Hermes core source) — do **not** use `pip install hermes-napcat`.
+
 ```bash
-pip install hermes-napcat
+pip install git+https://github.com/Zhaosn/hermes-napcat.git
+```
+
+Verify you got the plugin version:
+
+```bash
+pip show hermes-napcat    # Version: 0.3.0
 ```
 
 ### 2. Run the setup wizard

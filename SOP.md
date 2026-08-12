@@ -12,7 +12,7 @@
 | Hermes Agent | 源码安装，含 `~/.hermes/plugins/` 插件目录（较新的 `main` 构建均可） |
 | Python | 3.11+ |
 | NapCat | 已安装并运行，QQ 已登录 |
-| 网络 | 可访问 PyPI（`pip install hermes-napcat`） |
+| 网络 | 可访问 GitHub（`pip install git+https://github.com/Zhaosn/hermes-napcat.git`） |
 
 开始前先确认：
 
@@ -25,11 +25,15 @@ python --version          # Python >= 3.11
 
 ---
 
-## 1. 安装 pip 包
+## 1. 从 GitHub 安装（v0.3.0 插件版）
 
 ```bash
-pip install hermes-napcat
+pip install git+https://github.com/Zhaosn/hermes-napcat.git
 ```
+
+> **为什么不用 `pip install hermes-napcat`？** PyPI 上的 `hermes-napcat` 仍是 0.2.x
+> 旧版（补丁式，会修改 Hermes 核心源码），与本 SOP 描述的插件版不一致。0.3.0 插件版
+> 目前只通过本 fork（`Zhaosn/hermes-napcat`）的 GitHub 发布。
 
 > 依赖：`aiohttp>=3.9`（自动安装）。语音转写需另装 `ffmpeg`（可选）。
 
@@ -147,7 +151,7 @@ tail -f /tmp/hermes-gateway.log
 ### 升级 hermes-napcat
 
 ```bash
-pip install -U hermes-napcat
+pip install -U git+https://github.com/Zhaosn/hermes-napcat.git
 hermes-napcat install --qq <QQ> --admins <QQ> --token <Token>   # 重新覆盖插件 + 配置
 hermes gateway restart
 ```

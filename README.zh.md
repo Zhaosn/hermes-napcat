@@ -66,8 +66,17 @@ QQ客户端 ──── NapCat ──WS拨入──▶ hermes-napcat（插件�
 
 ### 1. 安装
 
+> ⚠️ 本 fork 的**插件版（0.3.0）**通过 GitHub 安装。PyPI 上的 `hermes-napcat` 仍是
+> 旧版 **0.2.x（补丁式，会修改 Hermes 核心源码）**——**不要**用 `pip install hermes-napcat`。
+
 ```bash
-pip install hermes-napcat
+pip install git+https://github.com/Zhaosn/hermes-napcat.git
+```
+
+确认装到的是插件版：
+
+```bash
+pip show hermes-napcat    # Version: 0.3.0
 ```
 
 ### 2. 运行安装向导
