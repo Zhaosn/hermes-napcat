@@ -1,23 +1,32 @@
-"""NapCat (OneBot 11 reverse WebSocket) platform adapter for Hermes Agent.
+"""NapCat (OneBot 11) platform adapter for Hermes Agent — plugin form.
 
-Installed by ``hermes-napcat install`` to:
-    gateway/platforms/napcat.py
+Runs a reverse-WebSocket **server** on ``ws://0.0.0.0:{ws_port}{ws_path}``
+(default ``ws://0.0.0.0:18801/onebot/v11``).  NapCat dials in as the WS
+client in ``Universal`` mode, so inbound message events and outbound API
+actions share one full-duplex connection (responses are correlated by
+``echo`` — see :mod:`.api`).
 
-Configuration in ~/.hermes/config.yaml:
+Installed as a Hermes plugin to ``~/.hermes/plugins/napcat/`` — no core
+Hermes source files are patched.  ``register(ctx)`` hooks the adapter into
+the platform registry, registers the 48 ``qq_*`` tools, and registers the
+``qq`` skill.
+
+Configuration (``~/.hermes/config.yaml`` → ``gateway.platforms.napcat``, or
+env vars prefixed ``NAPCAT_``):
 
     platforms:
       napcat:
         enabled: true
         extra:
-          http_api: "http://127.0.0.1:18801"
-          access_token: ""
-          self_id: "123456789"
-          ws_port: 18800
-          dm_policy: "allowlist"     # allowlist | open | disabled
-          allow_from: []             # QQ numbers allowed for DMs
-          group_policy: "open"       # open | allowlist | disabled
-          group_allow_from: []       # falls back to allow_from
-          admins: []                 # QQ numbers that can use admin-only tools
+          ws_port: 18801            # reverse-WS listen port
+          ws_path: "/onebot/v11"    # reverse-WS path (must match NapCat's URL)
+          access_token: ""          # NapCat reverse-WS 鉴权 Token
+          self_id: ""               # bot QQ (auto-detected via get_login_info)
+          dm_policy: "allowlist"    # allowlist | open | disabled
+          allow_from: []            # QQ numbers allowed for DMs
+          group_policy: "open"      # open | allowlist | disabled
+          group_allow_from: []      # falls back to allow_from
+          admins: []                # QQ numbers that can use admin-only tools
           media_max_mb: 5
 """
 from __future__ import annotations
@@ -30,6 +39,7 @@ import re
 import subprocess
 import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 import aiohttp
@@ -43,22 +53,16 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource
 
 from .api import (
-    call_onebot_api,
-    get_login_info,
-    get_msg,
+    OneBot11Client,
     image_segment,
     record_segment,
     reply_segment,
-    send_group_msg,
-    send_private_msg,
     text_segment,
-    upload_group_file,
-    upload_private_file,
     video_segment,
 )
+from . import qq_tool as _qq_tool
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,7 @@ _QQ_TEXT_LIMIT = 4500
 _AUDIO_EXTS = {".mp3", ".opus", ".ogg", ".wav", ".flac", ".m4a", ".aac", ".silk", ".amr"}
 _VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".ico", ".svg"}
+
 
 # ── Markdown → QQ plain-text ──────────────────────────────────────────────────
 
@@ -83,7 +88,6 @@ def _strip_markdown(text: str) -> str:
     code_lines: list[str] = []
 
     for line in lines:
-        # ── fenced code blocks ────────────────────────────────────────────
         fence = re.match(r"^(`{3,}|~{3,})(.*)", line.strip())
         if fence:
             if not in_code:
@@ -92,7 +96,6 @@ def _strip_markdown(text: str) -> str:
                 code_lines = []
             else:
                 in_code = False
-                block = "\n".join(code_lines)
                 label = f"[{code_lang}]" if code_lang else "[代码]"
                 out.append(f"┌─{label}─")
                 for cl in code_lines:
@@ -104,36 +107,28 @@ def _strip_markdown(text: str) -> str:
             code_lines.append(line)
             continue
 
-        # ── headings ──────────────────────────────────────────────────────
         h = re.match(r"^(#{1,6})\s+(.*)", line)
         if h:
             level, title = len(h.group(1)), h.group(2).strip()
             title = _inline(title)
-            if level <= 2:
-                out.append(f"【{title}】")
-            else:
-                out.append(f"▌ {title}")
+            out.append(f"【{title}】" if level <= 2 else f"▌ {title}")
             continue
 
-        # ── horizontal rules ──────────────────────────────────────────────
         if re.match(r"^\s*[-*_]{3,}\s*$", line):
             out.append("────────────────")
             continue
 
-        # ── blockquotes ───────────────────────────────────────────────────
         bq = re.match(r"^>\s?(.*)", line)
         if bq:
             out.append("「" + _inline(bq.group(1)) + "」")
             continue
 
-        # ── unordered lists ───────────────────────────────────────────────
         ul = re.match(r"^(\s*)[-*+]\s+(.*)", line)
         if ul:
             indent = len(ul.group(1)) // 2
             out.append("  " * indent + "• " + _inline(ul.group(2)))
             continue
 
-        # ── ordered lists ─────────────────────────────────────────────────
         ol = re.match(r"^(\s*)\d+[.)]\s+(.*)", line)
         if ol:
             indent = len(ol.group(1)) // 2
@@ -141,16 +136,13 @@ def _strip_markdown(text: str) -> str:
             out.append("  " * indent + num + ". " + _inline(ol.group(2)))
             continue
 
-        # ── table rows ────────────────────────────────────────────────────
         if re.match(r"^\s*\|", line):
-            # Skip separator rows (|---|---|)
             if re.match(r"^\s*\|[\s\-:|]+\|\s*$", line):
                 continue
             cells = [c.strip() for c in line.strip().strip("|").split("|")]
             out.append("  ".join(_inline(c) for c in cells if c))
             continue
 
-        # ── normal line ───────────────────────────────────────────────────
         out.append(_inline(line))
 
     return "\n".join(out).strip()
@@ -158,24 +150,16 @@ def _strip_markdown(text: str) -> str:
 
 def _inline(text: str) -> str:
     """Strip inline Markdown from a single line."""
-    # inline code: `code`
     text = re.sub(r"`([^`\n]+)`", r"\1", text)
-    # bold+italic: ***text*** or ___text___
     text = re.sub(r"\*{3}(.+?)\*{3}", r"\1", text)
     text = re.sub(r"_{3}(.+?)_{3}", r"\1", text)
-    # bold: **text** or __text__
     text = re.sub(r"\*{2}(.+?)\*{2}", r"\1", text)
     text = re.sub(r"_{2}(.+?)_{2}", r"\1", text)
-    # italic: *text* or _text_  (only word-boundary _ to avoid false positives)
     text = re.sub(r"\*(.+?)\*", r"\1", text)
     text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
-    # strikethrough: ~~text~~
     text = re.sub(r"~~(.+?)~~", r"\1", text)
-    # links: [text](url)
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1（\2）", text)
-    # images: ![alt](url)
     text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"[\1]", text)
-    # bare reference-style links: [text][ref]
     text = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", text)
     return text
 
@@ -290,7 +274,21 @@ async def _download_and_convert_wav(url: str, max_bytes: int) -> str | None:
         return None
 
 
-def check_napcat_requirements() -> bool:
+def _extract_ws_token(request: aiohttp.web.Request) -> str:
+    """Pull the OneBot 11 access token from a WS handshake."""
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    q = request.query.get("access_token")
+    if q:
+        return q.strip()
+    return ""
+
+
+# ── Passive probes / config helpers (called by the plugin registry) ───────────
+
+def check_requirements() -> bool:
+    """PASSIVE probe: are our dependencies importable right now?"""
     try:
         import aiohttp  # noqa: F401
         return True
@@ -298,60 +296,147 @@ def check_napcat_requirements() -> bool:
         return False
 
 
-class NapCatAdapter(BasePlatformAdapter):
-    """Hermes platform adapter for QQ via NapCat (OneBot 11 reverse WebSocket).
+def validate_config(config) -> bool:
+    """Return True when the platform has enough config to connect."""
+    extra = getattr(config, "extra", None) or {}
+    ws_port = extra.get("ws_port") or os.getenv("NAPCAT_WS_PORT")
+    return bool(ws_port)
 
-    NapCat dials **out** to the WS server we start here; we reply via
-    NapCat's HTTP API.
+
+def is_connected(config) -> bool:
+    """Check whether the platform is configured (env or config.yaml)."""
+    extra = getattr(config, "extra", None) or {}
+    return bool(extra.get("ws_port") or os.getenv("NAPCAT_WS_PORT"))
+
+
+def _env_enablement() -> dict | None:
+    """Seed ``PlatformConfig.extra`` from env vars during config load.
+
+    Also makes the gateway-level user-auth gate permissive by default (the
+    adapter enforces its own ``dm_policy``/``group_policy``), unless the
+    operator has explicitly narrowed it via ``NAPCAT_ALLOWED_USERS`` or
+    ``NAPCAT_ALLOW_ALL_USERS``.
+    """
+    seed: dict[str, Any] = {}
+    if os.getenv("NAPCAT_WS_PORT"):
+        seed["ws_port"] = int(os.getenv("NAPCAT_WS_PORT"))
+    if os.getenv("NAPCAT_WS_HOST"):
+        seed["ws_host"] = os.getenv("NAPCAT_WS_HOST")
+    if os.getenv("NAPCAT_WS_PATH"):
+        seed["ws_path"] = os.getenv("NAPCAT_WS_PATH")
+    if os.getenv("NAPCAT_ACCESS_TOKEN"):
+        seed["access_token"] = os.getenv("NAPCAT_ACCESS_TOKEN")
+    if os.getenv("NAPCAT_SELF_ID"):
+        seed["self_id"] = os.getenv("NAPCAT_SELF_ID")
+    if os.getenv("NAPCAT_DM_POLICY"):
+        seed["dm_policy"] = os.getenv("NAPCAT_DM_POLICY")
+    if os.getenv("NAPCAT_GROUP_POLICY"):
+        seed["group_policy"] = os.getenv("NAPCAT_GROUP_POLICY")
+    allowed = os.getenv("NAPCAT_ALLOWED_USERS")
+    if allowed:
+        seed["allow_from"] = [u.strip() for u in allowed.split(",") if u.strip()]
+    admins = os.getenv("NAPCAT_ADMINS")
+    if admins:
+        seed["admins"] = [u.strip() for u in admins.split(",") if u.strip()]
+
+    if not os.getenv("NAPCAT_ALLOW_ALL_USERS") and not os.getenv("NAPCAT_ALLOWED_USERS"):
+        os.environ["NAPCAT_ALLOW_ALL_USERS"] = "true"
+
+    return seed or None
+
+
+# ── Adapter ───────────────────────────────────────────────────────────────────
+
+class NapCatAdapter(BasePlatformAdapter):
+    """Hermes platform adapter for QQ via NapCat (OneBot 11 reverse WS).
+
+    NapCat dials **out** to the reverse-WS server we start here; we reply by
+    sending OneBot 11 actions back over the same full-duplex connection.
     """
 
     MAX_MESSAGE_LENGTH = _QQ_TEXT_LIMIT
 
     def __init__(self, config: PlatformConfig) -> None:
-        super().__init__(config, Platform.NAPCAT)
-        extra: dict[str, Any] = getattr(config, "extra", {}) or {}
+        super().__init__(config, Platform("napcat"))
+        extra: dict[str, Any] = getattr(config, "extra", None) or {}
 
-        self._http_api: str = extra.get("http_api", "").rstrip("/")
-        self._access_token: str = extra.get("access_token", "") or ""
-        raw_self_id = str(extra.get("self_id", ""))
-        # Treat placeholder values as empty so HTTP probe fills in real QQ
+        self._ws_host: str = extra.get("ws_host") or os.getenv("NAPCAT_WS_HOST", "0.0.0.0")
+        self._ws_port: int = int(extra.get("ws_port") or os.getenv("NAPCAT_WS_PORT", "18801"))
+        self._ws_path: str = extra.get("ws_path") or os.getenv("NAPCAT_WS_PATH", "/onebot/v11")
+        raw_token = str(extra.get("access_token") or os.getenv("NAPCAT_ACCESS_TOKEN", ""))
+        self._access_token: str = "" if raw_token in ("YOUR_NAPCAT_TOKEN", "YOURQQ_NUMBER") else raw_token
+        raw_self_id = str(extra.get("self_id") or "")
         self._self_id: str = "" if raw_self_id in ("YOUR_QQ_NUMBER", "YOURQQ_NUMBER") else raw_self_id
-        self._ws_port: int = int(extra.get("ws_port", 18800))
-        self._dm_policy: str = extra.get("dm_policy", "allowlist")
+        self._dm_policy: str = str(extra.get("dm_policy", "allowlist")).lower()
         self._allow_from: list[str] = [str(x) for x in extra.get("allow_from", [])]
-        self._group_policy: str = extra.get("group_policy", "open")
+        self._group_policy: str = str(extra.get("group_policy", "open")).lower()
         self._group_allow_from: list[str] = [str(x) for x in extra.get("group_allow_from", [])]
-        self._media_max_mb: int = int(extra.get("media_max_mb", 5))
         self._admins: list[str] = [str(x) for x in extra.get("admins", [])]
+        self._media_max_mb: int = int(extra.get("media_max_mb", 5))
 
+        self._client = OneBot11Client()
         self._runner: aiohttp.web.AppRunner | None = None
         self._active_ws: set[aiohttp.web.WebSocketResponse] = set()
 
-        # Wire up qq_tool so the agent can call QQ APIs directly
-        try:
-            from gateway.platforms import qq_tool as _qq_tool
-            _qq_tool._init(self._http_api, self._access_token, self._admins)
-        except ImportError:
-            pass
+        # Wire up the qq_* tools so handlers can send OneBot actions.
+        _qq_tool._init(self)
+
+    @property
+    def name(self) -> str:
+        return "NapCat (QQ)"
+
+    @property
+    def connected(self) -> bool:
+        """True when a NapCat client is currently dialed into our WS server."""
+        return self._client.is_connected()
 
     # ── Connection ─────────────────────────────────────────────────────────
 
-    async def connect(self) -> bool:
-        if not self._http_api:
-            logger.error("NapCat: http_api is not configured")
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        if not self._ws_path.startswith("/"):
+            logger.error("NapCat: ws_path must start with '/' (got %r)", self._ws_path)
             return False
 
         app = aiohttp.web.Application()
-        app.router.add_get("/", self._ws_handler)
+        app.router.add_get(self._ws_path, self._ws_handler)
         self._runner = aiohttp.web.AppRunner(app)
         await self._runner.setup()
-        site = aiohttp.web.TCPSite(self._runner, "0.0.0.0", self._ws_port)
+        site = aiohttp.web.TCPSite(self._runner, self._ws_host, self._ws_port)
         await site.start()
-        self._is_connected = True
-        logger.info("NapCat: reverse WS listening on ws://0.0.0.0:%d", self._ws_port)
+        self._mark_connected()
+        logger.info(
+            "NapCat: reverse WS listening on ws://%s:%d%s (waiting for NapCat to dial in)",
+            self._ws_host, self._ws_port, self._ws_path,
+        )
 
+        # Fill in the bot's own QQ number once a connection is available.
+        asyncio.create_task(self._fill_self_id())
+        return True
+
+    async def disconnect(self) -> None:
+        self._mark_disconnected()
+        for ws in list(self._active_ws):
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        self._active_ws.clear()
+        if self._runner:
+            try:
+                await self._runner.cleanup()
+            except Exception:
+                pass
+            self._runner = None
+        logger.info("NapCat: disconnected")
+
+    async def _fill_self_id(self) -> None:
         try:
-            info = await get_login_info(self._http_api, self._access_token or None)
+            # Give NapCat a moment to dial in.
+            for _ in range(10):
+                if self.connected:
+                    break
+                await asyncio.sleep(1)
+            info = await self._client.call("get_login_info")
             if not self._self_id:
                 self._self_id = str(info.get("user_id", ""))
             logger.info(
@@ -359,58 +444,53 @@ class NapCatAdapter(BasePlatformAdapter):
                 info.get("nickname", "?"), info.get("user_id", "?"),
             )
         except Exception as exc:
-            logger.warning("NapCat: HTTP probe failed (WS still running): %s", exc)
+            logger.warning("NapCat: get_login_info probe failed (WS may not be connected yet): %s", exc)
 
-        return True
-
-    async def disconnect(self) -> None:
-        self._is_connected = False
-        for ws in list(self._active_ws):
-            await ws.close()
-        self._active_ws.clear()
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        logger.info("NapCat: disconnected")
-
-    # ── Inbound WS handler ─────────────────────────────────────────────────
+    # ── Inbound WS server ──────────────────────────────────────────────────
 
     async def _ws_handler(self, request: aiohttp.web.Request) -> aiohttp.web.WebSocketResponse:
-        ws = aiohttp.web.WebSocketResponse()
+        if self._access_token and _extract_ws_token(request) != self._access_token:
+            logger.warning("NapCat: rejected WS connection from %s (bad access token)", request.remote)
+            return aiohttp.web.Response(status=403, text="forbidden")
+
+        ws = aiohttp.web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         self._active_ws.add(ws)
+        self._client.attach(ws)
         logger.info("NapCat WS connected from %s", request.remote)
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    asyncio.create_task(self._handle_raw(msg.data))
+                    try:
+                        data = json.loads(msg.data)
+                    except json.JSONDecodeError:
+                        continue
+                    if not self._client.handle_message(data):
+                        asyncio.create_task(self._process_message(data))
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
                     break
         finally:
             self._active_ws.discard(ws)
+            self._client.detach(ws)
             logger.info("NapCat WS disconnected")
         return ws
 
-    async def _handle_raw(self, raw: str) -> None:
-        try:
-            data: dict = json.loads(raw)
-        except json.JSONDecodeError:
-            return
+    async def _process_message(self, data: dict) -> None:
         if data.get("post_type") != "message":
             return
         try:
-            await self._process_message(data)
+            await self._handle_message_event(data)
         except Exception:
             logger.exception("NapCat: error processing message")
 
-    async def _process_message(self, event: dict) -> None:
+    async def _handle_message_event(self, event: dict) -> None:
         is_group = event.get("message_type") == "group"
         sender_id = str(event.get("user_id", ""))
-        sender = event.get("sender", {})
+        sender = event.get("sender", {}) or {}
         sender_name: str = sender.get("card") or sender.get("nickname") or sender_id
         group_id = str(event.get("group_id", "")) if is_group else ""
         chat_id = f"group:{group_id}" if is_group else sender_id
-        segments: list[dict] = event.get("message", [])
+        segments: list[dict] = event.get("message", []) or []
 
         # Group: require @bot mention
         if is_group:
@@ -419,7 +499,7 @@ class NapCatAdapter(BasePlatformAdapter):
             if self._self_id:
                 segments = _strip_bot_mention(segments, self._self_id)
 
-        # Authorization
+        # Policy checks
         if is_group:
             if self._group_policy == "disabled":
                 return
@@ -449,18 +529,18 @@ class NapCatAdapter(BasePlatformAdapter):
                 text = f"[{sender_name}]: {text}"
 
         # Fetch quoted message text for reply context
-        reply_id = _extract_reply_id(event.get("message", []))
+        reply_id = _extract_reply_id(segments)
         reply_text: str | None = None
         if reply_id:
             try:
-                quoted = await get_msg(self._http_api, reply_id, self._access_token or None)
-                q_sender = quoted.get("sender", {})
+                quoted = await self._client.call("get_msg", {"message_id": int(reply_id)})
+                q_sender = quoted.get("sender", {}) or {}
                 q_name = (
                     q_sender.get("card")
                     or q_sender.get("nickname")
                     or str(q_sender.get("user_id", ""))
                 )
-                q_text = _extract_text(quoted.get("message", []))
+                q_text = _extract_text(quoted.get("message", []) or [])
                 if q_text:
                     reply_text = f"[{q_name}]: {q_text}"
                     text = f"[引用 {q_name} 的消息: {q_text}]\n{text}"
@@ -500,15 +580,6 @@ class NapCatAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             return
 
-        source = SessionSource(
-            platform=Platform.NAPCAT,
-            chat_id=chat_id,
-            chat_name=sender_name if not is_group else group_id,
-            chat_type="group" if is_group else "dm",
-            user_id=sender_id,
-            user_name=sender_name,
-        )
-
         is_admin = sender_id in self._admins
         if is_admin:
             permission_prompt = (
@@ -530,6 +601,14 @@ class NapCatAdapter(BasePlatformAdapter):
                 "如请求管理操作，告知需联系管理员。"
             )
 
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=sender_name if not is_group else group_id,
+            chat_type="group" if is_group else "dm",
+            user_id=sender_id,
+            user_name=sender_name,
+        )
+
         message_event = MessageEvent(
             text=text,
             message_type=msg_type,
@@ -545,13 +624,20 @@ class NapCatAdapter(BasePlatformAdapter):
         )
 
         # Set per-message context so admin-gated tools know who is asking
-        try:
-            from gateway.platforms import qq_tool as _qq_tool
-            _qq_tool._set_context(sender_id, is_admin=is_admin)
-        except ImportError:
-            pass
+        _qq_tool._set_context(sender_id, is_admin=is_admin)
 
         await self.handle_message(message_event)
+
+    # ── OneBot 11 actions (used by the qq_* tools) ─────────────────────────
+
+    async def call_onebot_api(
+        self,
+        action: str,
+        params: dict | None = None,
+        timeout: float = 30.0,
+    ) -> dict:
+        """Send a OneBot 11 action over the Universal WS connection."""
+        return await self._client.call(action, params, timeout=timeout)
 
     # ── Outbound ───────────────────────────────────────────────────────────
 
@@ -580,9 +666,13 @@ class NapCatAdapter(BasePlatformAdapter):
                         pass
                 segs.append(text_segment(chunk))
                 if is_group:
-                    r = await send_group_msg(self._http_api, num_id, segs, self._access_token or None)
+                    r = await self._client.call(
+                        "send_group_msg", {"group_id": num_id, "message": segs}
+                    )
                 else:
-                    r = await send_private_msg(self._http_api, num_id, segs, self._access_token or None)
+                    r = await self._client.call(
+                        "send_private_msg", {"user_id": num_id, "message": segs}
+                    )
                 last_id = str(r.get("message_id", ""))
             return SendResult(success=True, message_id=last_id)
         except Exception as exc:
@@ -602,9 +692,13 @@ class NapCatAdapter(BasePlatformAdapter):
             if caption:
                 segs.append(text_segment(caption))
             if is_group:
-                r = await send_group_msg(self._http_api, num_id, segs, self._access_token or None)
+                r = await self._client.call(
+                    "send_group_msg", {"group_id": num_id, "message": segs}
+                )
             else:
-                r = await send_private_msg(self._http_api, num_id, segs, self._access_token or None)
+                r = await self._client.call(
+                    "send_private_msg", {"user_id": num_id, "message": segs}
+                )
             return SendResult(success=True, message_id=str(r.get("message_id", "")))
         except Exception as exc:
             return SendResult(success=False, error=str(exc), retryable=True)
@@ -617,11 +711,15 @@ class NapCatAdapter(BasePlatformAdapter):
     ) -> SendResult:
         try:
             is_group, num_id = self._parse_chat_id(chat_id)
-            segs = [record_segment(audio_path)]
+            segs: list[dict] = [record_segment(audio_path)]
             if is_group:
-                r = await send_group_msg(self._http_api, num_id, segs, self._access_token or None)
+                r = await self._client.call(
+                    "send_group_msg", {"group_id": num_id, "message": segs}
+                )
             else:
-                r = await send_private_msg(self._http_api, num_id, segs, self._access_token or None)
+                r = await self._client.call(
+                    "send_private_msg", {"user_id": num_id, "message": segs}
+                )
             return SendResult(success=True, message_id=str(r.get("message_id", "")))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -634,11 +732,15 @@ class NapCatAdapter(BasePlatformAdapter):
     ) -> SendResult:
         try:
             is_group, num_id = self._parse_chat_id(chat_id)
-            segs = [video_segment(video_path)]
+            segs: list[dict] = [video_segment(video_path)]
             if is_group:
-                r = await send_group_msg(self._http_api, num_id, segs, self._access_token or None)
+                r = await self._client.call(
+                    "send_group_msg", {"group_id": num_id, "message": segs}
+                )
             else:
-                r = await send_private_msg(self._http_api, num_id, segs, self._access_token or None)
+                r = await self._client.call(
+                    "send_private_msg", {"user_id": num_id, "message": segs}
+                )
             return SendResult(success=True, message_id=str(r.get("message_id", "")))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -654,9 +756,17 @@ class NapCatAdapter(BasePlatformAdapter):
             is_group, num_id = self._parse_chat_id(chat_id)
             name = filename or os.path.basename(file_path)
             if is_group:
-                await upload_group_file(self._http_api, num_id, file_path, name, self._access_token or None)
+                await self._client.call(
+                    "upload_group_file",
+                    {"group_id": num_id, "file": file_path, "name": name},
+                    timeout=60,
+                )
             else:
-                await upload_private_file(self._http_api, num_id, file_path, name, self._access_token or None)
+                await self._client.call(
+                    "upload_private_file",
+                    {"user_id": num_id, "file": file_path, "name": name},
+                    timeout=60,
+                )
             return SendResult(success=True)
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
@@ -665,29 +775,65 @@ class NapCatAdapter(BasePlatformAdapter):
         try:
             is_group, num_id = self._parse_chat_id(chat_id)
             if is_group:
-                resp = await call_onebot_api(
-                    self._http_api, "get_group_info",
-                    {"group_id": num_id, "no_cache": True},
-                    self._access_token or None,
+                g = await self._client.call(
+                    "get_group_info", {"group_id": num_id, "no_cache": True}
                 )
-                g = resp["data"]
                 return {"name": g.get("group_name", str(num_id)), "type": "group", "chat_id": chat_id}
-            else:
-                resp = await call_onebot_api(
-                    self._http_api, "get_stranger_info",
-                    {"user_id": num_id, "no_cache": True},
-                    self._access_token or None,
-                )
-                u = resp["data"]
-                return {"name": u.get("nickname", str(num_id)), "type": "dm", "chat_id": chat_id}
+            u = await self._client.call(
+                "get_stranger_info", {"user_id": num_id, "no_cache": True}
+            )
+            return {"name": u.get("nickname", str(num_id)), "type": "dm", "chat_id": chat_id}
         except Exception as exc:
             return {"name": chat_id, "type": "unknown", "error": str(exc), "chat_id": chat_id}
 
-    async def format_message(self, content: str) -> str:
+    def format_message(self, content: str) -> str:
         return _strip_markdown(content)
 
     async def send_typing(self, chat_id: str, metadata: dict | None = None) -> None:
-        pass  # QQ OneBot 无 typing indicator
+        pass  # QQ OneBot has no typing indicator
 
     async def stop_typing(self, chat_id: str) -> None:
         pass
+
+
+# ── Plugin entry point ────────────────────────────────────────────────────────
+
+def register(ctx) -> None:
+    """Called by the Hermes plugin system during discovery."""
+    ctx.register_platform(
+        name="napcat",
+        label="🐧 NapCat (QQ)",
+        adapter_factory=lambda cfg: NapCatAdapter(cfg),
+        check_fn=check_requirements,
+        validate_config=validate_config,
+        is_connected=is_connected,
+        required_env=["NAPCAT_ACCESS_TOKEN"],
+        install_hint=(
+            "hermes-napcat runs as a plugin — make sure aiohttp is installed "
+            "and set NAPCAT_ACCESS_TOKEN / ws_port to match your NapCat "
+            "reverse-WebSocket item."
+        ),
+        emoji="🐧",
+        max_message_length=_QQ_TEXT_LIMIT,
+        allowed_users_env="NAPCAT_ALLOWED_USERS",
+        allow_all_env="NAPCAT_ALLOW_ALL_USERS",
+        env_enablement_fn=_env_enablement,
+        cron_deliver_env_var="NAPCAT_HOME_CHANNEL",
+        platform_hint=(
+            "You are chatting via QQ (NapCat / OneBot 11). QQ does not render "
+            "Markdown — write plain text (the gateway strips Markdown before "
+            "sending). Use the provided qq_* tools for messaging, group "
+            "administration, files, OCR, and translation."
+        ),
+    )
+
+    _qq_tool.register_all(ctx)
+
+    skill_path = Path(__file__).parent / "skills" / "qq" / "SKILL.md"
+    if skill_path.exists():
+        ctx.register_skill(
+            "qq",
+            skill_path,
+            "QQ (NapCat / OneBot 11) guide: chat conventions, group policy, "
+            "admin permissions, and the available qq_* tools.",
+        )

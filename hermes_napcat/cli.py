@@ -1,10 +1,13 @@
-"""CLI entry point: ``hermes-napcat``."""
+"""CLI entry point: ``hermes-napcat``.
+
+Installs hermes-napcat as a Hermes **plugin** (no core source patching) and
+manages its platform config.  NapCat itself is user-managed — it dials into
+our reverse-WebSocket server.
+"""
 from __future__ import annotations
 
 import argparse
-import shutil
 import socket
-import subprocess
 import sys
 
 
@@ -36,34 +39,6 @@ def _port_in_use(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
-def _port_owner(port: int) -> str:
-    """Return a short process name listening on the port, or ''."""
-    import re
-    if shutil.which("ss"):
-        try:
-            out = subprocess.run(
-                ["ss", "-tlnp", f"sport = :{port}"],
-                capture_output=True, text=True, timeout=2,
-            ).stdout
-            m = re.search(r'users:\(\("([^"]+)"', out)
-            if m:
-                return m.group(1)
-        except Exception:
-            pass
-    if shutil.which("lsof"):
-        try:
-            out = subprocess.run(
-                ["lsof", "-i", f":{port}", "-sTCP:LISTEN", "-Fc"],
-                capture_output=True, text=True, timeout=2,
-            ).stdout
-            m = re.search(r'^c(.+)$', out, re.MULTILINE)
-            if m:
-                return m.group(1)
-        except Exception:
-            pass
-    return ""
-
-
 def _ask_port(prompt: str, default: int) -> int:
     """Prompt for a port, warn if already in use, let user pick another."""
     while True:
@@ -72,9 +47,7 @@ def _ask_port(prompt: str, default: int) -> int:
             print(f"    Port must be between 1 and 65535.")
             continue
         if _port_in_use(port):
-            owner = _port_owner(port)
-            detail = f": {owner}" if owner else ""
-            print(f"    ! Port {port} is already in use{detail}")
+            print(f"    ! Port {port} is already in use")
             choice = _ask("    Use it anyway, or pick a different port? (use/pick)", "pick").lower()
             if choice in ("use", "u"):
                 return port
@@ -91,28 +64,20 @@ def _parse_admins(raw: str, qq: str | None = None) -> list[str]:
 
 
 def _interactive_setup() -> dict:
-    """Run the full interactive configuration wizard.
-    Returns a dict with all setup parameters.
-    """
+    """Run the full interactive configuration wizard."""
     print("\n" + "=" * 52)
     print("  hermes-napcat Interactive Setup")
     print("=" * 52)
     print("  Press Enter to accept the default [shown in brackets].\n")
 
-    # ── Hermes location ───────────────────────────────────────────────────────
-    print("  Hermes Agent location:")
-    hermes_dir = _ask("Path to hermes-agent source (blank = auto-detect)", "")
-    hermes_dir = hermes_dir or None
+    print("  Hermes home (the gateway's ~/.hermes):")
+    from .installer import hermes_home
+    print(f"    {hermes_home()}\n")
 
-    print()
-
-    # ── QQ number ─────────────────────────────────────────────────────────────
     print("  QQ account:")
     qq = _ask("QQ number (blank = skip, configure later)", "") or None
 
     print()
-
-    # ── Admins ────────────────────────────────────────────────────────────────
     print("  Admin QQ numbers (can use management commands like kick, mute, etc.):")
     if qq:
         print(f"  Your QQ ({qq}) will be added as admin automatically.")
@@ -127,27 +92,19 @@ def _interactive_setup() -> dict:
         print("    No admins set — all users can run management commands (open mode)")
 
     print()
-
-    # ── Ports ─────────────────────────────────────────────────────────────────
-    print("  Network ports:")
-    ws_port   = _ask_port("Hermes reverse-WS port (NapCat dials into Hermes)", 18800)
-    http_port = _ask_port("NapCat HTTP API port  (Hermes calls NapCat)", 18801)
+    print("  Reverse WebSocket (NapCat dials into Hermes):")
+    ws_port = _ask_port("Reverse-WS port", 18801)
+    ws_path = _ask("Reverse-WS path", "/onebot/v11")
 
     print()
-
-    # ── Access token ──────────────────────────────────────────────────────────
     print("  Security:")
-    access_token = _ask("Access token (blank = no auth)", "")
+    access_token = _ask("NapCat 鉴权 Token (blank = no auth)", "")
 
     print()
-
-    # ── Summary ───────────────────────────────────────────────────────────────
     print("  ── Summary " + "─" * 40)
-    print(f"  Hermes dir:   {hermes_dir or '(auto-detect)'}")
     print(f"  QQ number:    {qq or '(none)'}")
     print(f"  Admins:       {', '.join(admins) if admins else '(open mode)'}")
-    print(f"  WS port:      {ws_port}")
-    print(f"  HTTP port:    {http_port}")
+    print(f"  WS:           ws://0.0.0.0:{ws_port}{ws_path}")
     print(f"  Access token: {access_token or '(none)'}")
     print()
 
@@ -160,11 +117,10 @@ def _interactive_setup() -> dict:
             sys.exit(0)
 
     return dict(
-        hermes_dir=hermes_dir,
         qq=qq,
         admins=admins,
         ws_port=ws_port,
-        http_port=http_port,
+        ws_path=ws_path,
         access_token=access_token,
     )
 
@@ -172,7 +128,15 @@ def _interactive_setup() -> dict:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main(argv: list[str] | None = None) -> None:
-    from .installer import install, uninstall, status
+    from .installer import install, status, uninstall
+
+    # Windows GBK consoles crash on ✓/→ etc. — force UTF-8 output so CLI
+    # messages never raise UnicodeEncodeError.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     parser = argparse.ArgumentParser(
         prog="hermes-napcat",
@@ -180,108 +144,81 @@ def main(argv: list[str] | None = None) -> None:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # ── install / status (Hermes patching only) ───────────────────────────────
     for name, help_text in [
-        ("install", "Inject NapCat support into a local Hermes Agent installation"),
-        ("status",  "Show Hermes installation status"),
+        ("install", "Install the hermes-napcat plugin + write config (non-interactive)"),
+        ("status",  "Show plugin installation status"),
     ]:
         p = sub.add_parser(name, help=help_text)
-        p.add_argument("--hermes-dir", metavar="PATH", default=None,
-                       help="Path to hermes-agent source (auto-detected if omitted)")
+        p.add_argument("--qq", metavar="QQ_NUMBER", default=None,
+                       help="Your QQ number (bot self_id)")
+        p.add_argument("--admins", metavar="QQ[,QQ...]", default=None,
+                       help="Comma-separated admin QQ numbers")
+        p.add_argument("--ws-port", metavar="PORT", type=int, default=18801,
+                       help="Reverse-WS listen port (default 18801)")
+        p.add_argument("--ws-path", metavar="PATH", default="/onebot/v11",
+                       help="Reverse-WS path (default /onebot/v11)")
+        p.add_argument("--token", metavar="TOKEN", default="",
+                       help="NapCat 鉴权 Token (default: none)")
 
-    # ── uninstall ─────────────────────────────────────────────────────────────
-    uninstall_p = sub.add_parser(
-        "uninstall",
-        help="Remove NapCat support (Hermes patches + config)",
-    )
-    uninstall_p.add_argument("--hermes-dir", metavar="PATH", default=None,
-                             help="Path to hermes-agent source (auto-detected if omitted)")
+    uninstall_p = sub.add_parser("uninstall", help="Remove the plugin + its config")
     uninstall_p.add_argument("-y", "--yes", action="store_true", default=False,
                              help="Skip confirmation prompt")
 
-    # ── setup (interactive wizard, all flags optional) ────────────────────────
     setup_p = sub.add_parser(
         "setup",
-        help="Interactive setup wizard — configure everything in one go",
+        help="Interactive setup wizard — install the plugin + configure everything",
         description=(
-            "Interactive setup: patches Hermes Agent and writes the NapCat / "
-            "Hermes config. It does not install or launch NapCat.\n"
+            "Interactive setup: installs hermes-napcat as a Hermes plugin and "
+            "writes the napcat platform block to ~/.hermes/config.yaml. It does "
+            "not install, launch, or configure NapCat.\n"
             "Run with no flags for the full interactive wizard.\n"
             "Supply flags to skip individual prompts (useful for scripting)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    setup_p.add_argument("--hermes-dir", metavar="PATH", default=None,
-                         help="Path to hermes-agent source (auto-detected if omitted)")
     setup_p.add_argument("--qq", metavar="QQ_NUMBER", default=None,
                          help="Your QQ number")
     setup_p.add_argument("--admins", metavar="QQ[,QQ...]", default=None,
                          help="Comma-separated admin QQ numbers (default: your QQ number)")
     setup_p.add_argument("--ws-port", metavar="PORT", type=int, default=None,
-                         help="Hermes reverse-WS port NapCat dials into (default 18800)")
-    setup_p.add_argument("--http-port", metavar="PORT", type=int, default=None,
-                         help="NapCat HTTP API port Hermes calls (default 18801)")
+                         help="Reverse-WS listen port (default 18801)")
+    setup_p.add_argument("--ws-path", metavar="PATH", default=None,
+                         help="Reverse-WS path (default /onebot/v11)")
     setup_p.add_argument("--token", metavar="TOKEN", default=None,
-                         help="Access token (default: none)")
+                         help="NapCat 鉴权 Token (default: none)")
 
     args = parser.parse_args(argv)
 
     try:
-        if args.command == "install":
-            install(args.hermes_dir)
-
-        elif args.command == "uninstall":
-            from .napcat import clean_hermes_config
-
-            if not args.yes:
-                print("\nThis will remove: Hermes patches + config")
-                ans = _ask("Are you sure? (yes/no)", "no").lower()
-                if ans not in ("yes", "y"):
-                    print("Uninstall cancelled.")
-                    return
-
-            print("\nRemoving Hermes patches...")
-            uninstall(args.hermes_dir)
-            ok, msg = clean_hermes_config()
-            if ok:
-                print(f"  [+] Cleaned ~/.hermes/config.yaml: {msg}")
-            else:
-                print(f"  [!] Config cleanup: {msg}")
-
-            print("\n✓ Uninstall complete.")
-
-        elif args.command == "status":
-            status(args.hermes_dir)
-
-        elif args.command == "setup":
-            from .napcat import setup
-
-            # Determine if any flags were supplied to skip the wizard
+        if args.command in ("install", "setup"):
             flags_supplied = any([
-                args.hermes_dir, args.qq,
-                args.admins is not None,
-                args.ws_port is not None, args.http_port is not None,
-                args.token is not None,
+                args.qq, args.admins is not None,
+                getattr(args, "ws_port", None) is not None,
+                getattr(args, "ws_path", None) is not None,
+                getattr(args, "token", None) is not None,
             ])
 
-            if flags_supplied or not sys.stdin.isatty():
-                # Non-interactive: use flags, fill defaults for anything omitted
+            if args.command == "setup" and not flags_supplied and sys.stdin.isatty():
+                cfg = _interactive_setup()
+            else:
+                if not sys.stdin.isatty() and not flags_supplied:
+                    print("Non-interactive: using defaults (ws://0.0.0.0:18801/onebot/v11, no token).")
                 admins = _parse_admins(args.admins or "", args.qq) if (args.admins or args.qq) else []
                 cfg = dict(
-                    hermes_dir=args.hermes_dir,
                     qq=args.qq,
                     admins=admins,
-                    ws_port=args.ws_port if args.ws_port is not None else 18800,
-                    http_port=args.http_port if args.http_port is not None else 18801,
+                    ws_port=args.ws_port if args.ws_port is not None else 18801,
+                    ws_path=args.ws_path or "/onebot/v11",
                     access_token=args.token or "",
                 )
-                if not sys.stdin.isatty() and not flags_supplied:
-                    print("Non-interactive: using all defaults (ports 18800/18801).")
-            else:
-                # Full interactive wizard
-                cfg = _interactive_setup()
 
-            setup(**cfg)
+            install(**cfg)
+
+        elif args.command == "uninstall":
+            uninstall(yes=args.yes)
+
+        elif args.command == "status":
+            status()
 
     except FileNotFoundError as exc:
         print(f"Error: {exc}", file=sys.stderr)

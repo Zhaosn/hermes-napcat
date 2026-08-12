@@ -1,35 +1,33 @@
-"""QQ (NapCat / OneBot 11) tools for Hermes Agent.
+"""QQ (NapCat / OneBot 11) tools for Hermes Agent — plugin form.
 
-Installed by ``hermes-napcat install`` to: tools/qq_tool.py
+All 48 tools are registered by :func:`register_all` via ``ctx.register_tool``
+into the ``hermes-napcat`` toolset.  Handlers talk to NapCat through the live
+``NapCatAdapter`` (set by ``_init``), which sends OneBot 11 actions over the
+reverse-WebSocket connection (Universal mode) instead of an HTTP API.
 
-The NapCat adapter calls ``_init()`` at startup to supply the HTTP API URL
-and access token.  All handlers are async (is_async=True).
+Admin-required tools call ``_require_admin()`` inside the handler; the current
+sender's context is set per-message by the adapter via ``_set_context``.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
-import aiohttp
-
-from tools.registry import registry, tool_error, tool_result
+from tools.registry import tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 
 # ── Runtime config (injected by NapCatAdapter.__init__) ───────────────────────
 
-_http_api: str = ""
-_access_token: str = ""
-_admins: list[str] = []
+_adapter: Any = None
 _current_sender: str = ""
 _current_is_admin: bool = False
 
 
-def _init(http_api: str, access_token: str = "", admins: list[str] | None = None) -> None:
-    global _http_api, _access_token, _admins
-    _http_api = http_api.rstrip("/")
-    _access_token = access_token
-    _admins = [str(a) for a in (admins or [])]
+def _init(adapter: Any) -> None:
+    """Called by NapCatAdapter.__init__ with the live adapter instance."""
+    global _adapter
+    _adapter = adapter
 
 
 def _set_context(sender_id: str, is_admin: bool) -> None:
@@ -41,8 +39,8 @@ def _set_context(sender_id: str, is_admin: bool) -> None:
 
 def _check() -> str | None:
     """Return an error string if the tool is not ready, else None."""
-    if not _http_api:
-        return "NapCat HTTP API not configured. Is the NapCat adapter running?"
+    if _adapter is None or not getattr(_adapter, "connected", False):
+        return "NapCat 尚未连接。请确认网关已启动且 NapCat 已拨入反向 WS。"
     return None
 
 
@@ -54,25 +52,37 @@ def _require_admin() -> str | None:
     return None
 
 
-# ── Core HTTP helper ───────────────────────────────────────────────────────────
+# ── Core OneBot action helper ─────────────────────────────────────────────────
 
 async def _call(endpoint: str, **params: Any) -> dict:
-    url = f"{_http_api}/{endpoint}"
-    headers = {"Content-Type": "application/json"}
-    if _access_token:
-        headers["Authorization"] = f"Bearer {_access_token}"
+    if _adapter is None:
+        raise RuntimeError("NapCat adapter not initialized")
     body = {k: v for k, v in params.items() if v is not None}
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url, json=body, headers=headers,
-            timeout=aiohttp.ClientTimeout(total=30),
-        ) as resp:
-            data = await resp.json(content_type=None)
-    retcode = data.get("retcode", 0)
-    if retcode != 0:
-        msg = data.get("message") or data.get("msg") or f"retcode={retcode}"
-        raise RuntimeError(f"OneBot API error ({endpoint}): {msg}")
-    return data.get("data") or {}
+    return await _adapter.call_onebot_api(endpoint, params=body, timeout=30)
+
+
+# ── Registration ──────────────────────────────────────────────────────────────
+
+_REGISTRY_ENTRIES: list[tuple[str, dict, Callable]] = []
+
+
+def _register(name: str, schema: dict, handler: Callable) -> None:
+    _REGISTRY_ENTRIES.append((name, schema, handler))
+
+
+def register_all(ctx: Any) -> None:
+    """Register all QQ tools into the ``hermes-napcat`` toolset."""
+    for name, schema, handler in _REGISTRY_ENTRIES:
+        ctx.register_tool(
+            name=name,
+            toolset="hermes-napcat",
+            schema=schema,
+            handler=handler,
+            is_async=True,
+            emoji="🐧",
+            description=schema.get("description", ""),
+        )
+    logger.debug("hermes-napcat: registered %d qq_* tools", len(_REGISTRY_ENTRIES))
 
 
 # ── Schema helpers ─────────────────────────────────────────────────────────────
@@ -121,13 +131,10 @@ async def _qq_send_message(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_send_message",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_send_message,
-    schema=_schema(
+
+_register(
+    "qq_send_message",
+    _schema(
         "qq_send_message",
         "Send a QQ message to a group or private chat. "
         "message is a list of OneBot 11 segments, e.g. [{\"type\":\"text\",\"data\":{\"text\":\"hello\"}}].",
@@ -143,6 +150,7 @@ registry.register(
         },
         required=["message_type", "message"],
     ),
+    _qq_send_message,
 )
 
 
@@ -156,17 +164,15 @@ async def _qq_recall_message(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_recall_message",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_recall_message,
-    schema=_schema(
+
+_register(
+    "qq_recall_message",
+    _schema(
         "qq_recall_message", "Recall (unsend) a QQ message by its message_id.",
         {"message_id": _str("Message ID to recall")},
         required=["message_id"],
     ),
+    _qq_recall_message,
 )
 
 
@@ -180,17 +186,15 @@ async def _qq_mark_msg_as_read(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_mark_msg_as_read",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_mark_msg_as_read,
-    schema=_schema(
+
+_register(
+    "qq_mark_msg_as_read",
+    _schema(
         "qq_mark_msg_as_read", "Mark a message as read.",
         {"message_id": _str("Message ID")},
         required=["message_id"],
     ),
+    _qq_mark_msg_as_read,
 )
 
 
@@ -208,13 +212,10 @@ async def _qq_set_msg_emoji_like(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_msg_emoji_like",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_msg_emoji_like,
-    schema=_schema(
+
+_register(
+    "qq_set_msg_emoji_like",
+    _schema(
         "qq_set_msg_emoji_like", "React to a message with an emoji (QQ emoji ID).",
         {
             "message_id": _str("Message ID"),
@@ -222,6 +223,7 @@ registry.register(
         },
         required=["message_id", "emoji_id"],
     ),
+    _qq_set_msg_emoji_like,
 )
 
 
@@ -240,13 +242,10 @@ async def _qq_forward_message(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_forward_message",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_forward_message,
-    schema=_schema(
+
+_register(
+    "qq_forward_message",
+    _schema(
         "qq_forward_message", "Forward a single message to a group or private chat.",
         {
             "message_id": _str("Message ID to forward"),
@@ -255,6 +254,7 @@ registry.register(
         },
         required=["message_id"],
     ),
+    _qq_forward_message,
 )
 
 
@@ -272,13 +272,10 @@ async def _qq_send_group_forward_msg(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_send_group_forward_msg",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_send_group_forward_msg,
-    schema=_schema(
+
+_register(
+    "qq_send_group_forward_msg",
+    _schema(
         "qq_send_group_forward_msg",
         "Send a merged-forward message to a group. messages is a list of forward node segments.",
         {
@@ -291,6 +288,7 @@ registry.register(
         },
         required=["group_id", "messages"],
     ),
+    _qq_send_group_forward_msg,
 )
 
 
@@ -308,13 +306,10 @@ async def _qq_send_private_forward_msg(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_send_private_forward_msg",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_send_private_forward_msg,
-    schema=_schema(
+
+_register(
+    "qq_send_private_forward_msg",
+    _schema(
         "qq_send_private_forward_msg",
         "Send a merged-forward message to a private chat.",
         {
@@ -327,6 +322,7 @@ registry.register(
         },
         required=["user_id", "messages"],
     ),
+    _qq_send_private_forward_msg,
 )
 
 
@@ -349,13 +345,10 @@ async def _qq_get_group_msg_history(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_msg_history",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_msg_history,
-    schema=_schema(
+
+_register(
+    "qq_get_group_msg_history",
+    _schema(
         "qq_get_group_msg_history", "Fetch recent message history from a group.",
         {
             "group_id": _str("Group ID"),
@@ -364,6 +357,7 @@ registry.register(
         },
         required=["group_id"],
     ),
+    _qq_get_group_msg_history,
 )
 
 
@@ -382,13 +376,10 @@ async def _qq_get_friend_msg_history(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_friend_msg_history",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_friend_msg_history,
-    schema=_schema(
+
+_register(
+    "qq_get_friend_msg_history",
+    _schema(
         "qq_get_friend_msg_history", "Fetch recent message history with a friend.",
         {
             "user_id": _str("Friend QQ number"),
@@ -397,6 +388,7 @@ registry.register(
         },
         required=["user_id"],
     ),
+    _qq_get_friend_msg_history,
 )
 
 
@@ -410,17 +402,15 @@ async def _qq_get_essence_msg_list(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_essence_msg_list",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_essence_msg_list,
-    schema=_schema(
+
+_register(
+    "qq_get_essence_msg_list",
+    _schema(
         "qq_get_essence_msg_list", "Get the list of essence (pinned highlight) messages in a group.",
         {"group_id": _str("Group ID")},
         required=["group_id"],
     ),
+    _qq_get_essence_msg_list,
 )
 
 
@@ -434,17 +424,15 @@ async def _qq_set_essence_msg(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_essence_msg",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_essence_msg,
-    schema=_schema(
+
+_register(
+    "qq_set_essence_msg",
+    _schema(
         "qq_set_essence_msg", "Set a message as an essence (highlight) message in a group. Requires admin.",
         {"message_id": _str("Message ID")},
         required=["message_id"],
     ),
+    _qq_set_essence_msg,
 )
 
 
@@ -458,17 +446,15 @@ async def _qq_delete_essence_msg(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_delete_essence_msg",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_delete_essence_msg,
-    schema=_schema(
+
+_register(
+    "qq_delete_essence_msg",
+    _schema(
         "qq_delete_essence_msg", "Remove a message from the group's essence list. Requires admin.",
         {"message_id": _str("Message ID")},
         required=["message_id"],
     ),
+    _qq_delete_essence_msg,
 )
 
 
@@ -486,17 +472,15 @@ async def _qq_get_user_info(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_user_info",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_user_info,
-    schema=_schema(
+
+_register(
+    "qq_get_user_info",
+    _schema(
         "qq_get_user_info", "Get basic info (nickname, avatar, etc.) for any QQ user.",
         {"user_id": _str("QQ number")},
         required=["user_id"],
     ),
+    _qq_get_user_info,
 )
 
 
@@ -510,13 +494,11 @@ async def _qq_get_friend_list(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_friend_list",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_friend_list,
-    schema=_schema("qq_get_friend_list", "Get the bot's friend list.", {}),
+
+_register(
+    "qq_get_friend_list",
+    _schema("qq_get_friend_list", "Get the bot's friend list.", {}),
+    _qq_get_friend_list,
 )
 
 
@@ -534,13 +516,10 @@ async def _qq_like_user(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_like_user",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_like_user,
-    schema=_schema(
+
+_register(
+    "qq_like_user",
+    _schema(
         "qq_like_user", "Send a profile like to a QQ user.",
         {
             "user_id": _str("QQ number to like"),
@@ -548,6 +527,7 @@ registry.register(
         },
         required=["user_id"],
     ),
+    _qq_like_user,
 )
 
 
@@ -565,13 +545,10 @@ async def _qq_set_friend_remark(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_friend_remark",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_friend_remark,
-    schema=_schema(
+
+_register(
+    "qq_set_friend_remark",
+    _schema(
         "qq_set_friend_remark", "Set or clear the remark (alias) for a friend.",
         {
             "user_id": _str("Friend QQ number"),
@@ -579,6 +556,7 @@ registry.register(
         },
         required=["user_id"],
     ),
+    _qq_set_friend_remark,
 )
 
 
@@ -592,17 +570,15 @@ async def _qq_delete_friend(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_delete_friend",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_delete_friend,
-    schema=_schema(
+
+_register(
+    "qq_delete_friend",
+    _schema(
         "qq_delete_friend", "Delete a friend. Requires admin.",
         {"user_id": _str("Friend QQ number to remove")},
         required=["user_id"],
     ),
+    _qq_delete_friend,
 )
 
 
@@ -621,13 +597,10 @@ async def _qq_handle_friend_request(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_handle_friend_request",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_handle_friend_request,
-    schema=_schema(
+
+_register(
+    "qq_handle_friend_request",
+    _schema(
         "qq_handle_friend_request", "Accept or reject an incoming friend request. Requires admin.",
         {
             "flag": _str("Request flag from the friend_request event"),
@@ -636,6 +609,7 @@ registry.register(
         },
         required=["flag"],
     ),
+    _qq_handle_friend_request,
 )
 
 
@@ -653,13 +627,10 @@ async def _qq_poke(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_poke",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_poke,
-    schema=_schema(
+
+_register(
+    "qq_poke",
+    _schema(
         "qq_poke", "Poke (nudge) a user in a group or private chat.",
         {
             "user_id": _str("Target QQ number"),
@@ -667,6 +638,7 @@ registry.register(
         },
         required=["user_id"],
     ),
+    _qq_poke,
 )
 
 
@@ -684,17 +656,15 @@ async def _qq_get_group_info(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_info",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_info,
-    schema=_schema(
+
+_register(
+    "qq_get_group_info",
+    _schema(
         "qq_get_group_info", "Get basic info for a QQ group (name, member count, etc.).",
         {"group_id": _str("Group ID")},
         required=["group_id"],
     ),
+    _qq_get_group_info,
 )
 
 
@@ -708,13 +678,11 @@ async def _qq_get_group_list(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_list",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_list,
-    schema=_schema("qq_get_group_list", "Get the list of all groups the bot has joined.", {}),
+
+_register(
+    "qq_get_group_list",
+    _schema("qq_get_group_list", "Get the list of all groups the bot has joined.", {}),
+    _qq_get_group_list,
 )
 
 
@@ -732,13 +700,10 @@ async def _qq_get_group_member_info(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_member_info",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_member_info,
-    schema=_schema(
+
+_register(
+    "qq_get_group_member_info",
+    _schema(
         "qq_get_group_member_info", "Get detailed info for a group member.",
         {
             "group_id": _str("Group ID"),
@@ -746,6 +711,7 @@ registry.register(
         },
         required=["group_id", "user_id"],
     ),
+    _qq_get_group_member_info,
 )
 
 
@@ -759,17 +725,15 @@ async def _qq_get_group_member_list(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_member_list",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_member_list,
-    schema=_schema(
+
+_register(
+    "qq_get_group_member_list",
+    _schema(
         "qq_get_group_member_list", "List all members of a group.",
         {"group_id": _str("Group ID")},
         required=["group_id"],
     ),
+    _qq_get_group_member_list,
 )
 
 
@@ -787,13 +751,10 @@ async def _qq_get_group_honor_info(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_honor_info",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_honor_info,
-    schema=_schema(
+
+_register(
+    "qq_get_group_honor_info",
+    _schema(
         "qq_get_group_honor_info",
         "Get honor info (龙王/群聊之火/etc.) for a group.",
         {
@@ -802,6 +763,7 @@ registry.register(
         },
         required=["group_id"],
     ),
+    _qq_get_group_honor_info,
 )
 
 
@@ -815,18 +777,16 @@ async def _qq_get_group_at_all_remain(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_at_all_remain",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_at_all_remain,
-    schema=_schema(
+
+_register(
+    "qq_get_group_at_all_remain",
+    _schema(
         "qq_get_group_at_all_remain",
         "Check remaining @all usage count for a group today.",
         {"group_id": _str("Group ID")},
         required=["group_id"],
     ),
+    _qq_get_group_at_all_remain,
 )
 
 
@@ -849,13 +809,10 @@ async def _qq_mute_group_member(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_mute_group_member",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_mute_group_member,
-    schema=_schema(
+
+_register(
+    "qq_mute_group_member",
+    _schema(
         "qq_mute_group_member", "Mute a group member for a given duration (0 = unmute). Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -864,6 +821,7 @@ registry.register(
         },
         required=["group_id", "user_id"],
     ),
+    _qq_mute_group_member,
 )
 
 
@@ -882,13 +840,10 @@ async def _qq_kick_group_member(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_kick_group_member",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_kick_group_member,
-    schema=_schema(
+
+_register(
+    "qq_kick_group_member",
+    _schema(
         "qq_kick_group_member", "Kick a member from a group. Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -897,6 +852,7 @@ registry.register(
         },
         required=["group_id", "user_id"],
     ),
+    _qq_kick_group_member,
 )
 
 
@@ -915,13 +871,10 @@ async def _qq_set_group_admin(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_group_admin",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_group_admin,
-    schema=_schema(
+
+_register(
+    "qq_set_group_admin",
+    _schema(
         "qq_set_group_admin", "Grant or revoke group admin for a member. Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -930,6 +883,7 @@ registry.register(
         },
         required=["group_id", "user_id"],
     ),
+    _qq_set_group_admin,
 )
 
 
@@ -947,13 +901,10 @@ async def _qq_set_group_name(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_group_name",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_group_name,
-    schema=_schema(
+
+_register(
+    "qq_set_group_name",
+    _schema(
         "qq_set_group_name", "Rename a group. Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -961,6 +912,7 @@ registry.register(
         },
         required=["group_id", "group_name"],
     ),
+    _qq_set_group_name,
 )
 
 
@@ -979,13 +931,10 @@ async def _qq_set_group_card(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_group_card",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_group_card,
-    schema=_schema(
+
+_register(
+    "qq_set_group_card",
+    _schema(
         "qq_set_group_card", "Set or clear a member's in-group nickname (card).",
         {
             "group_id": _str("Group ID"),
@@ -994,6 +943,7 @@ registry.register(
         },
         required=["group_id", "user_id"],
     ),
+    _qq_set_group_card,
 )
 
 
@@ -1011,13 +961,10 @@ async def _qq_set_group_whole_ban(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_group_whole_ban",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_group_whole_ban,
-    schema=_schema(
+
+_register(
+    "qq_set_group_whole_ban",
+    _schema(
         "qq_set_group_whole_ban", "Enable or disable whole-group mute. Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -1025,6 +972,7 @@ registry.register(
         },
         required=["group_id"],
     ),
+    _qq_set_group_whole_ban,
 )
 
 
@@ -1044,13 +992,10 @@ async def _qq_set_group_special_title(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_group_special_title",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_group_special_title,
-    schema=_schema(
+
+_register(
+    "qq_set_group_special_title",
+    _schema(
         "qq_set_group_special_title", "Set a custom special title for a group member (owner only). Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -1059,6 +1004,7 @@ registry.register(
         },
         required=["group_id", "user_id"],
     ),
+    _qq_set_group_special_title,
 )
 
 
@@ -1076,13 +1022,10 @@ async def _qq_leave_group(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_leave_group",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_leave_group,
-    schema=_schema(
+
+_register(
+    "qq_leave_group",
+    _schema(
         "qq_leave_group", "Leave a group (or dismiss it if the bot is the owner). Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -1090,6 +1033,7 @@ registry.register(
         },
         required=["group_id"],
     ),
+    _qq_leave_group,
 )
 
 
@@ -1103,17 +1047,15 @@ async def _qq_set_group_sign(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_group_sign",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_group_sign,
-    schema=_schema(
+
+_register(
+    "qq_set_group_sign",
+    _schema(
         "qq_set_group_sign", "Perform group sign-in (打卡).",
         {"group_id": _str("Group ID")},
         required=["group_id"],
     ),
+    _qq_set_group_sign,
 )
 
 
@@ -1131,13 +1073,10 @@ async def _qq_set_group_remark(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_group_remark",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_group_remark,
-    schema=_schema(
+
+_register(
+    "qq_set_group_remark",
+    _schema(
         "qq_set_group_remark", "Set a personal remark for a group (visible only to you).",
         {
             "group_id": _str("Group ID"),
@@ -1145,6 +1084,7 @@ registry.register(
         },
         required=["group_id"],
     ),
+    _qq_set_group_remark,
 )
 
 
@@ -1162,13 +1102,10 @@ async def _qq_set_group_portrait(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_set_group_portrait",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_set_group_portrait,
-    schema=_schema(
+
+_register(
+    "qq_set_group_portrait",
+    _schema(
         "qq_set_group_portrait", "Set the group avatar (owner/admin only). Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -1176,6 +1113,7 @@ registry.register(
         },
         required=["group_id", "file"],
     ),
+    _qq_set_group_portrait,
 )
 
 
@@ -1195,13 +1133,10 @@ async def _qq_handle_group_request(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_handle_group_request",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_handle_group_request,
-    schema=_schema(
+
+_register(
+    "qq_handle_group_request",
+    _schema(
         "qq_handle_group_request", "Accept or reject a group join request or group invite. Requires admin.",
         {
             "flag": _str("Request flag from the group_request event"),
@@ -1211,6 +1146,7 @@ registry.register(
         },
         required=["flag"],
     ),
+    _qq_handle_group_request,
 )
 
 
@@ -1233,13 +1169,10 @@ async def _qq_send_group_notice(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_send_group_notice",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_send_group_notice,
-    schema=_schema(
+
+_register(
+    "qq_send_group_notice",
+    _schema(
         "qq_send_group_notice", "Publish a group announcement. Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -1248,6 +1181,7 @@ registry.register(
         },
         required=["group_id", "content"],
     ),
+    _qq_send_group_notice,
 )
 
 
@@ -1261,17 +1195,15 @@ async def _qq_get_group_notice(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_notice",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_notice,
-    schema=_schema(
+
+_register(
+    "qq_get_group_notice",
+    _schema(
         "qq_get_group_notice", "Get the list of group announcements.",
         {"group_id": _str("Group ID")},
         required=["group_id"],
     ),
+    _qq_get_group_notice,
 )
 
 
@@ -1289,13 +1221,10 @@ async def _qq_delete_group_notice(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_delete_group_notice",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_delete_group_notice,
-    schema=_schema(
+
+_register(
+    "qq_delete_group_notice",
+    _schema(
         "qq_delete_group_notice", "Delete a group announcement. Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -1303,6 +1232,7 @@ registry.register(
         },
         required=["group_id", "notice_id"],
     ),
+    _qq_delete_group_notice,
 )
 
 
@@ -1334,13 +1264,10 @@ async def _qq_upload_file(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_upload_file",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_upload_file,
-    schema=_schema(
+
+_register(
+    "qq_upload_file",
+    _schema(
         "qq_upload_file", "Upload a file to a group or private chat.",
         {
             "file": _str("Local file path or URL"),
@@ -1351,6 +1278,7 @@ registry.register(
         },
         required=["file"],
     ),
+    _qq_upload_file,
 )
 
 
@@ -1364,17 +1292,15 @@ async def _qq_get_group_root_files(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_root_files",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_root_files,
-    schema=_schema(
+
+_register(
+    "qq_get_group_root_files",
+    _schema(
         "qq_get_group_root_files", "List files and folders in a group's root file directory.",
         {"group_id": _str("Group ID")},
         required=["group_id"],
     ),
+    _qq_get_group_root_files,
 )
 
 
@@ -1393,13 +1319,10 @@ async def _qq_get_group_file_url(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_get_group_file_url",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_get_group_file_url,
-    schema=_schema(
+
+_register(
+    "qq_get_group_file_url",
+    _schema(
         "qq_get_group_file_url", "Get a temporary download URL for a group file.",
         {
             "group_id": _str("Group ID"),
@@ -1408,6 +1331,7 @@ registry.register(
         },
         required=["group_id", "file_id"],
     ),
+    _qq_get_group_file_url,
 )
 
 
@@ -1426,13 +1350,10 @@ async def _qq_create_group_file_folder(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_create_group_file_folder",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_create_group_file_folder,
-    schema=_schema(
+
+_register(
+    "qq_create_group_file_folder",
+    _schema(
         "qq_create_group_file_folder", "Create a folder in the group file system.",
         {
             "group_id": _str("Group ID"),
@@ -1441,6 +1362,7 @@ registry.register(
         },
         required=["group_id", "name"],
     ),
+    _qq_create_group_file_folder,
 )
 
 
@@ -1459,13 +1381,10 @@ async def _qq_delete_group_file(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_delete_group_file",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_delete_group_file,
-    schema=_schema(
+
+_register(
+    "qq_delete_group_file",
+    _schema(
         "qq_delete_group_file", "Delete a file from the group file system. Requires admin.",
         {
             "group_id": _str("Group ID"),
@@ -1474,6 +1393,7 @@ registry.register(
         },
         required=["group_id", "file_id"],
     ),
+    _qq_delete_group_file,
 )
 
 
@@ -1492,13 +1412,10 @@ async def _qq_download_file(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_download_file",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_download_file,
-    schema=_schema(
+
+_register(
+    "qq_download_file",
+    _schema(
         "qq_download_file",
         "Ask NapCat to download a file from a URL and return the local path.",
         {
@@ -1508,6 +1425,7 @@ registry.register(
         },
         required=["url"],
     ),
+    _qq_download_file,
 )
 
 
@@ -1525,17 +1443,15 @@ async def _qq_ocr_image(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_ocr_image",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_ocr_image,
-    schema=_schema(
+
+_register(
+    "qq_ocr_image",
+    _schema(
         "qq_ocr_image", "Run OCR on an image and return the recognized text.",
         {"image": _str("Image file path or URL")},
         required=["image"],
     ),
+    _qq_ocr_image,
 )
 
 
@@ -1549,15 +1465,13 @@ async def _qq_translate_en2zh(args: dict, **_) -> str:
     except Exception as e:
         return tool_error(str(e))
 
-registry.register(
-    name="qq_translate_en2zh",
-    toolset="napcat",
-    is_async=True,
-    emoji="🐧",
-    handler=_qq_translate_en2zh,
-    schema=_schema(
+
+_register(
+    "qq_translate_en2zh",
+    _schema(
         "qq_translate_en2zh", "Translate English text to Chinese using the QQ translation service.",
         {"content": _str("English text to translate")},
         required=["content"],
     ),
+    _qq_translate_en2zh,
 )

@@ -2,7 +2,7 @@
 
 # hermes-napcat
 
-**[Hermes Agent](https://github.com/NousResearch/hermes-agent) 的 NapCat（QQ / OneBot 11）平台适配器**
+**[Hermes Agent](https://github.com/NousResearch/hermes-agent) 的 NapCat（QQ / OneBot 11）平台插件**
 
 [![PyPI](https://img.shields.io/pypi/v/hermes-napcat?color=blue)](https://pypi.org/project/hermes-napcat/)
 [![Python](https://img.shields.io/pypi/pyversions/hermes-napcat)](https://pypi.org/project/hermes-napcat/)
@@ -14,11 +14,13 @@
 
 通过 [NapCat](https://github.com/NapNeko/NapCatQQ) 的 OneBot 11 反向 WebSocket 将 Hermes 接入 QQ。在任意 QQ 群或私聊中与 AI 助手对话，支持完整的群管理功能和管理员权限控制。
 
+以 **标准 Hermes 插件** 安装（`~/.hermes/plugins/napcat/`），**不修改任何 Hermes 核心源码**——升级 Hermes 无需重装。
+
 ```
-QQ客户端 ──── NapCat ──WS──▶ hermes-napcat ──▶ Hermes（大模型）
-                                  │                    │
-                                  └─────HTTP API ◀─────┘
-                                 （18801端口）  （18800端口）
+QQ客户端 ──── NapCat ──WS拨入──▶ hermes-napcat（插件） ──▶ Hermes（大模型）
+                                    │
+                                    └── 一条 Universal 全双工 WS：事件 + API ──┐
+                                      （反向 WS 服务端，默认 ws://0.0.0.0:18801/onebot/v11）
 ```
 
 ---
@@ -31,16 +33,17 @@ QQ客户端 ──── NapCat ──WS──▶ hermes-napcat ──▶ Hermes
 - **48 个 QQ 工具** — 消息、群管理、文件操作、OCR、表情回应等一应俱全
 - **多媒体支持** — 图片、语音（ffmpeg 转 WAV）、视频、文件上传下载
 - **引用消息上下文** — 回复消息时自动携带被引用内容
-- **一键安装向导** — 交互式向导自动修补 Hermes 并写入配置
+- **Universal 反向 WS** — 事件与 API 共用一条连接，无需额外 HTTP API
+- **一键安装向导** — 只安装插件 + 写入配置，不做多余的事
 
 ---
 
 ## 环境要求
 
 - Python 3.11+
-- [Hermes Agent](https://github.com/NousResearch/hermes-agent)（源码安装）
-- [NapCat](https://github.com/NapNeko/NapCatQQ)（需开启 HTTP API + 反向 WS）
-- `aiohttp >= 3.9`
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent)（含插件系统，即任何较新的 `main` 构建）
+- [NapCat](https://github.com/NapNeko/NapCatQQ)（需开启「反向 WebSocket」项）
+- `aiohttp >= 3.9`（随 hermes-napcat 一起安装）
 - `ffmpeg` *（可选，用于语音消息转录）*
 
 ---
@@ -59,21 +62,28 @@ pip install hermes-napcat
 hermes-napcat setup
 ```
 
-向导会自动修补 Hermes Agent、写入 NapCat 配置、更新 `~/.hermes/config.yaml`，并询问你的 QQ 号和管理员列表。
+向导会把插件复制到 `~/.hermes/plugins/napcat/`，并把 `platforms.napcat` 平台块合并进 `~/.hermes/config.yaml`。
 
 非交互式安装（脚本/CI 环境）：
 
 ```bash
-hermes-napcat setup --qq 123456789 --admins "123456789,987654321"
+hermes-napcat setup --qq 123456789 --admins "123456789,987654321" --token "<napcat-token>"
 ```
 
-> hermes-napcat **不负责**安装或启动 NapCat —— 你需要自行运行 NapCat
-> （例如使用[官方安装器](https://github.com/NapNeko/NapCat-Installer)）。
-> setup 步骤会写入 NapCat 的 `onebot11.json`，让 NapCat 主动连接 Hermes。
+> hermes-napcat **不负责安装 / 启动 / 配置 NapCat** —— 你需要自行安装并运行
+> NapCat（例如使用[官方安装器](https://github.com/NapNeko/NapCat-Installer)）。
 
-### 3. 自行安装并启动 NapCat
+### 3. 配置 NapCat 的反向 WebSocket
 
-按照你喜欢的方式安装并启动 [NapCat](https://github.com/NapNeko/NapCatQQ)。启动后它会读取 `setup` 写入的 `onebot11.json`，主动连接 Hermes 的反向 WebSocket。
+在 NapCat 的网络设置中添加一个反向 WS 项：
+
+| 设置 | 值 |
+|------|-----|
+| 反向 WS：本端作客户端主动连远端 | 开启 |
+| 服务端 WebSocket URL | `ws://127.0.0.1:18801/onebot/v11` |
+| 连接角色 | Universal（全双工，API + 事件） |
+| 消息上报格式 | Array（结构化数组） |
+| 鉴权 Token | 与 `--token` 一致（可不填） |
 
 ### 4. 启动 Hermes 网关
 
@@ -81,7 +91,7 @@ hermes-napcat setup --qq 123456789 --admins "123456789,987654321"
 nohup hermes gateway run > /tmp/hermes-gateway.log 2>&1 &
 ```
 
-网关会开启反向 WS 监听端口，然后**仅等待 NapCat 建立连接** —— 无需其它操作。
+网关发现插件后会在 `ws://0.0.0.0:18801/onebot/v11` 开启反向 WS 监听，然后**仅等待 NapCat 建立连接**——无需其它操作。
 
 ---
 
@@ -94,72 +104,53 @@ platforms:
   napcat:
     enabled: true
     extra:
-      http_api: "http://127.0.0.1:18801"   # NapCat HTTP API 地址
-      access_token: ""                      # Bearer Token（NapCat 中设置后填写）
-      self_id: "123456789"                  # 机器人 QQ 号
-      ws_port: 18800                        # 反向 WS 监听端口
-      dm_policy: open                       # open（开放）| allowlist（白名单）| disabled（关闭）
-      allow_from: []                        # 允许私聊的 QQ 号（白名单模式）
-      admins:                               # 可使用管理指令的 QQ 号
-        - "123456789"
+      ws_port: 18801                # 反向 WS 监听端口
+      ws_path: "/onebot/v11"        # 反向 WS 路径（须与 NapCat 的 URL 一致）
+      access_token: ""              # NapCat 反向 WS 鉴权 Token
+      self_id: "123456789"          # 机器人 QQ 号（留空则连接后自动探测）
+      dm_policy: "allowlist"        # open | allowlist | disabled
+      allow_from: []                # 允许私聊的 QQ 号
+      group_policy: "open"          # open | allowlist | disabled
+      group_allow_from: []          # 缺省回退到 allow_from
+      admins: []                    # 可使用管理指令的 QQ 号
+      media_max_mb: 5
 
 platform_toolsets:
   napcat:
-    - hermes-cli
-    - hermes-napcat
+    - hermes-cli                    # 终端 / 文件 / 搜索等核心工具
+    - hermes-napcat                 # 48 个 qq_* 工具（插件工具集，默认启用）
 
-group_sessions_per_user: false              # 整个群共享一个会话
+group_sessions_per_user: false      # 整个群共享一个会话
 ```
 
-### NapCat OneBot 11 配置
+等价的环境变量（通过插件的 `env_enablement_fn` 自动注入）：
 
-`~/Napcat/opt/QQ/resources/app/app_launcher/napcat/config/onebot11.json`：
-
-```json
-{
-  "network": {
-    "httpServers": [{
-      "name": "httpServer",
-      "enable": true,
-      "port": 18801,
-      "host": "0.0.0.0",
-      "enableCors": true,
-      "enableWebsocket": true,
-      "messagePostFormat": "array",
-      "token": "",
-      "debug": false
-    }],
-    "websocketClients": [{
-      "name": "HermesWs",
-      "enable": true,
-      "url": "ws://127.0.0.1:18800",
-      "messagePostFormat": "array",
-      "reportSelfMessage": false,
-      "reconnectInterval": 5000,
-      "token": "",
-      "debug": false,
-      "heartInterval": 30000
-    }],
-    "websocketServers": [],
-    "httpSseServers": []
-  }
-}
 ```
+NAPCAT_ACCESS_TOKEN  NAPCAT_WS_PORT  NAPCAT_WS_HOST  NAPCAT_WS_PATH
+NAPCAT_SELF_ID       NAPCAT_DM_POLICY  NAPCAT_GROUP_POLICY
+NAPCAT_ALLOWED_USERS（逗号分隔）  NAPCAT_ADMINS（逗号分隔）
+NAPCAT_ALLOW_ALL_USERS  NAPCAT_HOME_CHANNEL
+```
+
+> **网关级鉴权：** 插件声明了 `allowed_users_env` / `allow_all_env`，核心的
+> `_is_user_authorized()` 开箱即用。除非你显式设置 `NAPCAT_ALLOWED_USERS` 或
+> `NAPCAT_ALLOW_ALL_USERS`，否则由适配器自身的 `dm_policy` / `group_policy` /
+> `admins` 把关。
 
 ---
 
 ## 管理员系统
 
-在配置中设置 `admins` 来限制谁可以使用管理指令：
+在 napcat 平台块中设置 `admins` 来限制谁可以使用管理指令：
 
 ```yaml
-admins:
-  - "123456789"
+platforms:
+  napcat:
+    extra:
+      admins: ["123456789", "987654321"]
 ```
 
 若 `admins` 为空，则所有人均可调用任意工具（开放模式）。
-
-### 权限级别
 
 | 操作 | 普通用户 | 管理员 |
 |------|:-------:|:------:|
@@ -167,9 +158,12 @@ admins:
 | QQ 管理工具（禁言、踢人、设置管理员等） | ❌ | ✅ |
 | 破坏性系统操作 | ❌ | ⚠️ 需二次确认 |
 
-管理员请求不可逆操作时，机器人会先说明操作内容，等待确认后再执行。
-
-**仅管理员可用的 QQ 工具：** 踢人、禁言、设置管理员、修改群名、全群禁言、退群、设置群头像、设置专属头衔、设置/删除精华消息、发布/删除群公告、删除群文件、处理加好友/加群请求、删除好友。
+**仅管理员可用的 QQ 工具：** `qq_kick_group_member`、`qq_mute_group_member`、
+`qq_set_group_admin`、`qq_set_group_name`、`qq_set_group_whole_ban`、
+`qq_leave_group`、`qq_set_group_portrait`、`qq_set_group_special_title`、
+`qq_set_essence_msg`、`qq_delete_essence_msg`、`qq_send_group_notice`、
+`qq_delete_group_notice`、`qq_delete_group_file`、`qq_delete_friend`、
+`qq_handle_friend_request`、`qq_handle_group_request`。
 
 ---
 
@@ -190,12 +184,16 @@ admins:
 
 ## 工作原理
 
-hermes-napcat 从不拉起 NapCat —— NapCat 独立运行。Hermes 网关会开启 18800 端口反向 WS 监听，然后**仅等待 NapCat 建立连接**。
-
-1. **NapCat** 主动连接到 `ws://127.0.0.1:18800`（反向 WebSocket）
-2. **hermes-napcat** 接收 OneBot 11 事件，提取文字/媒体，检查私聊/群聊策略，群消息自动加发送者昵称前缀
-3. **Hermes Agent** 使用完整工具集处理消息
-4. **响应结果** 通过 NapCat 的 HTTP API（`http://127.0.0.1:18801`）发回
+1. **安装** — `hermes_napcat/plugin/` → `~/.hermes/plugins/napcat/`。Hermes 启动时发现
+   插件，调用 `register(ctx)`，把适配器注册进平台注册表（`gateway/run.py` 的
+   `_create_adapter()` 优先查注册表）。
+2. **连接** — 适配器在 `ws://0.0.0.0:{ws_port}{ws_path}` 开启反向 WS **服务端**；
+   NapCat 作为客户端拨入（Universal 角色）。
+3. **入站** — NapCat 上报消息事件（Array 格式）；适配器执行 DM / 群策略、为群消息加
+   发送者前缀、拉取引用消息上下文，归一化成 `MessageEvent` 交给 `handle_message()`。
+4. **出站** — 回复通过同一条 WS 发送 OneBot 11 动作（`send_group_msg` /
+   `send_private_msg`、图片/语音/视频/文件），用 `echo` 关联响应；发送前把
+   Markdown 转成 QQ 友好的纯文本。
 
 ### 会话隔离策略
 
@@ -211,59 +209,42 @@ hermes-napcat 从不拉起 NapCat —— NapCat 独立运行。Hermes 网关会�
 
 | 命令 | 说明 |
 |------|------|
-| `hermes-napcat setup` | 交互式安装向导 —— 修补 Hermes + 写入配置 |
-| `hermes-napcat install` | 仅修补 Hermes Agent |
-| `hermes-napcat uninstall` | 移除 Hermes 补丁 + 配置 |
-| `hermes-napcat status` | 查看安装状态 |
+| `hermes-napcat setup` | 交互式安装向导 —— 安装插件 + 写入配置 |
+| `hermes-napcat install` | 非交互式安装（`--qq --admins --ws-port --ws-path --token`） |
+| `hermes-napcat uninstall` | 移除插件 + 清理配置块 |
+| `hermes-napcat status` | 查看插件 / 配置安装状态 |
 
-没有 NapCat 进程管理命令 —— NapCat 由你独立安装和运行，启动后自动连接 Hermes。
+没有 NapCat 进程管理命令 —— NapCat 由你独立运行，网关启动后它会自动连上。
 
 ---
 
 ## 卸载
 
 ```bash
-hermes-napcat uninstall    # 移除 Hermes 补丁 + 配置
+hermes-napcat uninstall
 ```
 
-NapCat 由你独立安装和管理，卸载不会触碰它。
+删除 `~/.hermes/plugins/napcat/`，并清理 `config.yaml` 里的 `platforms.napcat` /
+`platform_toolsets.napcat`。NapCat 进程不受影响。
 
 ---
 
 ## 常见问题排查
 
-| 现象 | 原因 | 解决方法 |
-|------|------|----------|
-| 群里不回消息 | 未被 @ | 在群消息中 @机器人 |
-| `ECONNREFUSED 127.0.0.1:18800` | 网关未运行 | `hermes gateway run` |
-| `403 unsupported_user_agent` | API 提供商拦截了 SDK 的 User-Agent | 参见下方说明 |
-| `KeyError: 'napcat'` | `platforms.py` 未打补丁 | 重新运行 `hermes-napcat install` |
-| 所有消息均提示 `Unauthorized user` | `run.py` 缺少认证绕过 | 重新运行 `hermes-napcat install` |
-| `Permission denied: only admins` | 发送者不在管理员列表 | 将 QQ 号加入 `admins`，或设置 `admins: []` |
+| 现象 | 原因 / 解决 |
+|------|------------|
+| 网关日志显示没有 WS 连接 | NapCat 反向 WS 项必须指向 `ws://127.0.0.1:{ws_port}{ws_path}` 且为 Universal 角色 |
+| 握手 `403` | `access_token` 与 NapCat 反向 WS 项里配置的不一致 |
+| `ECONNREFUSED 127.0.0.1:18801` | 网关未运行（`hermes gateway run`），或端口被占用——改 `ws_port` |
+| 群里不回消息 | 群聊需要 @机器人（或将成员加入 allow_from 并设 `group_policy: allowlist`） |
+| `Permission denied: only admins` | 发送者不在 `admins`；加入其 QQ 号或设 `admins: []` |
+| `hermes plugins list` 里看不到 | 插件目录必须是 `~/.hermes/plugins/napcat/`，含 `plugin.yaml` + `__init__.py`；重跑 `hermes-napcat setup` |
 
 ### 特定 API 提供商说明
 
-部分 API 提供商会拦截 OpenAI SDK 默认的 `AsyncOpenAI/Python X.X.X` User-Agent。在 `~/.hermes/hermes-agent/run_agent.py` 的 `_apply_client_headers_for_base_url` 方法中，在 `else` 分支前加入：
-
-```python
-elif "your-provider.com" in normalized:
-    self._client_kwargs["default_headers"] = {
-        "User-Agent": "codex_cli_rs/0.0.0",
-        "originator": "codex_cli_rs"
-    }
-```
-
-同样的修改也需要应用到第二处位置（约第 1176 行）以及 `agent/auxiliary_client.py`。
-
----
-
-## 贡献者
-
-<!-- ALL-CONTRIBUTORS-LIST:START -->
-| 头像 | 名字 | 角色 |
-|------|------|------|
-| [![shubyi](https://github.com/shubyi.png?size=60)](https://github.com/shubyi) | **[shubyi](https://github.com/shubyi)** | 创建者 & 维护者 |
-<!-- ALL-CONTRIBUTORS-LIST:END -->
+部分 LLM API 提供商会拦截 OpenAI SDK 默认的 `AsyncOpenAI/Python X.X.X` User-Agent。
+若遇到 `403 unsupported_user_agent`，请在 `~/.hermes/hermes-agent/run_agent.py`
+中为你的提供商加请求头覆盖（参见 Hermes 文档）——这与 NapCat 插件无关。
 
 ---
 

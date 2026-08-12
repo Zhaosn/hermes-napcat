@@ -1,507 +1,270 @@
-"""Installer: patches a local Hermes Agent source tree to add NapCat support.
+"""Installer: installs hermes-napcat as a Hermes **plugin**.
 
-Strategy
---------
-1. Locate the Hermes ``gateway`` package (importable or via --hermes-dir).
-2. Copy ``adapter.py`` → ``{gateway}/platforms/napcat.py``.
-3. Patch ``{gateway}/config.py``:  add ``NAPCAT = "napcat"`` to Platform enum.
-4. Patch ``{gateway}/run.py``:     add NapCat branch to ``_create_adapter()``.
-5. Patch ``toolsets.py`` (sibling of ``gateway/``): add napcat toolset & include
-   it in ``hermes-gateway``.
+No core Hermes source files are patched.  ``hermes-napcat setup``:
 
-All patched files are backed up as ``<file>.napcat.bak`` before modification.
-Uninstall restores the backups and removes ``gateway/platforms/napcat.py``.
+1. Copies ``hermes_napcat/plugin/`` → ``{hermes_home}/plugins/napcat/``.
+2. Merges the ``platforms.napcat`` block (+ ``platform_toolsets.napcat``) into
+   ``{hermes_home}/config.yaml``.
+
+Hermes' plugin loader discovers the directory, calls ``register(ctx)``, and
+the gateway connects the adapter via the platform registry — zero core code
+changes, no ``.napcat.bak`` backups to maintain.
+
+NapCat itself is never installed, launched, or configured here — you run it
+and point its reverse-WebSocket item at ``ws://127.0.0.1:{ws_port}{ws_path}``.
 """
 from __future__ import annotations
 
-import importlib.util
 import os
-import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-# ── Locate Hermes ─────────────────────────────────────────────────────────────
+_PLUGIN_NAME = "napcat"
 
-def find_hermes_dir(hint: str | None = None) -> Path:
-    """Return the directory that contains the ``gateway`` package."""
-    if hint:
-        p = Path(hint).resolve()
-        if (p / "gateway" / "__init__.py").exists():
-            return p
-        if (p / "__init__.py").exists() and p.name == "gateway":
-            return p.parent
-        raise FileNotFoundError(f"Cannot find Hermes gateway package in: {hint}")
 
-    # Try importable gateway
-    spec = importlib.util.find_spec("gateway")
-    if spec and spec.origin:
-        return Path(spec.origin).parent.parent  # gateway/__init__.py → root
+def hermes_home() -> Path:
+    """Return the Hermes home directory (``$HERMES_HOME`` or ``~/.hermes``)."""
+    return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
 
-    # Try common install locations
-    candidates = [
-        Path.home() / ".hermes" / "hermes-agent",
-        Path("/opt/hermes-agent"),
-        Path("/usr/local/hermes-agent"),
-    ]
-    for p in candidates:
-        if (p / "gateway" / "__init__.py").exists():
-            return p
 
-    raise FileNotFoundError(
-        "Cannot locate Hermes Agent installation.\n"
-        "Install it first:\n"
-        "  git clone https://github.com/NousResearch/hermes-agent ~/.hermes/hermes-agent\n"
-        "  cd ~/.hermes/hermes-agent && pip install -e . --break-system-packages\n"
-        "Or specify the path: hermes-napcat setup --hermes-dir /path/to/hermes-agent"
+def plugin_dest() -> Path:
+    return hermes_home() / "plugins" / _PLUGIN_NAME
+
+
+def config_path() -> Path:
+    return hermes_home() / "config.yaml"
+
+
+def _plugin_source() -> Path:
+    return Path(__file__).parent / "plugin"
+
+
+# ── pip helper (only used to install pyyaml for config editing) ───────────────
+
+def _pip_install(package: str) -> None:
+    cmd = [sys.executable, "-m", "pip", "install", package, "-q"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        return
+    if "externally-managed-environment" in result.stderr or "externally managed" in result.stderr:
+        subprocess.run(cmd + ["--break-system-packages"], check=True)
+    else:
+        raise RuntimeError(f"pip install {package} failed:\n{result.stderr}")
+
+
+# ── Plugin directory ──────────────────────────────────────────────────────────
+
+def install_plugin() -> Path:
+    """Copy the bundled plugin directory into the Hermes plugins dir."""
+    src = _plugin_source()
+    if not (src / "plugin.yaml").exists():
+        raise FileNotFoundError(f"Plugin source missing plugin.yaml at {src}")
+    dst = plugin_dest()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(
+        src, dst,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo"),
     )
+    return dst
 
 
-# ── File helpers ──────────────────────────────────────────────────────────────
-
-def _backup(path: Path) -> None:
-    bak = path.with_suffix(path.suffix + ".napcat.bak")
-    if not bak.exists():
-        shutil.copy2(path, bak)
-
-
-def _restore(path: Path) -> bool:
-    bak = path.with_suffix(path.suffix + ".napcat.bak")
-    if bak.exists():
-        shutil.copy2(bak, path)
-        bak.unlink()
+def uninstall_plugin() -> bool:
+    dst = plugin_dest()
+    if dst.exists():
+        shutil.rmtree(dst)
+        # Drop empty parent dirs (plugins/, .hermes/) so uninstall is clean.
+        for parent in (dst.parent, dst.parent.parent):
+            try:
+                parent.rmdir()
+            except OSError:
+                break
         return True
     return False
 
 
-def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+# ── Hermes config ──────────────────────────────────────────────────────────────
+
+def _napcat_platform_block(
+    ws_port: int,
+    ws_path: str,
+    access_token: str,
+    qq: str | None,
+    admins: list[str] | None = None,
+) -> dict:
+    return {
+        "enabled": True,
+        "extra": {
+            "ws_port": ws_port,
+            "ws_path": ws_path,
+            "access_token": access_token or "",
+            "self_id": qq or "YOUR_QQ_NUMBER",
+            "dm_policy": "allowlist",
+            "allow_from": [],
+            "group_policy": "open",
+            "admins": admins or [],
+        },
+    }
 
 
-def _write(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8")
+def write_hermes_config(
+    ws_port: int,
+    ws_path: str,
+    access_token: str,
+    qq: str | None,
+    admins: list[str] | None = None,
+) -> tuple[bool, str]:
+    """Merge the napcat platform block into ``~/.hermes/config.yaml``.
 
+    Returns (success, message).
+    """
+    try:
+        import yaml
+    except ImportError:
+        try:
+            _pip_install("pyyaml")
+            import yaml
+        except Exception as e:
+            return False, f"pyyaml not installed and auto-install failed: {e}"
 
-# ── Step 1: copy adapter ──────────────────────────────────────────────────────
-
-def _install_adapter(hermes_root: Path) -> None:
-    pkg = Path(__file__).parent
-    platforms_dir = hermes_root / "gateway" / "platforms"
-    tools_dir = hermes_root / "tools"
-
-    # Copy adapter (napcat.py) — rewrites relative imports to absolute
-    adapter_src = (pkg / "adapter.py").read_text(encoding="utf-8")
-    adapter_src = adapter_src.replace(
-        "from .api import",
-        "from gateway.platforms.napcat_api import",
-    )
-    # After install, qq_tool lives in tools/, not gateway/platforms/
-    adapter_src = adapter_src.replace(
-        "from gateway.platforms import qq_tool as _qq_tool",
-        "import tools.qq_tool as _qq_tool",
-    )
-    dst = platforms_dir / "napcat.py"
-    dst.write_text(adapter_src, encoding="utf-8")
-    print(f"  [+] Copied adapter        → {dst}")
-
-    # Copy api module as napcat_api.py
-    api_dst = platforms_dir / "napcat_api.py"
-    shutil.copy2(pkg / "api.py", api_dst)
-    print(f"  [+] Copied API client     → {api_dst}")
-
-    # Copy qq_tool.py into tools/
-    if tools_dir.exists():
-        shutil.copy2(pkg / "qq_tool.py", tools_dir / "qq_tool.py")
-        print(f"  [+] Copied QQ tools       → {tools_dir / 'qq_tool.py'}")
+    cfg_path = config_path()
+    if cfg_path.exists():
+        with cfg_path.open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
     else:
-        print(f"  [!] tools/ directory not found — qq_tool.py not installed")
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg = {}
 
-
-def _uninstall_adapter(hermes_root: Path) -> None:
-    platforms_dir = hermes_root / "gateway" / "platforms"
-    for name in ("napcat.py", "napcat_api.py"):
-        p = platforms_dir / name
-        if p.exists():
-            p.unlink()
-            print(f"  [-] Removed {p}")
-
-    qq_tool = hermes_root / "tools" / "qq_tool.py"
-    if qq_tool.exists():
-        qq_tool.unlink()
-        print(f"  [-] Removed {qq_tool}")
-
-
-# ── Step 2: patch gateway/config.py ──────────────────────────────────────────
-
-_CONFIG_MARKER = "# napcat-installed"
-_NAPCAT_ENUM_LINE = '    NAPCAT = "napcat"  ' + _CONFIG_MARKER
-
-
-def _patch_config(hermes_root: Path) -> None:
-    path = hermes_root / "gateway" / "config.py"
-    _backup(path)
-    src = _read(path)
-
-    if _CONFIG_MARKER in src:
-        print("  [=] gateway/config.py already patched")
-        return
-
-    # Insert NAPCAT into the Platform enum after the last existing member
-    # We look for the class definition and insert before the closing line
-    pattern = r'(class Platform\(.*?Enum.*?\):.*?)(^\s*\w+ = "[^"]+"\s*$)'
-    match = re.search(pattern, src, re.MULTILINE | re.DOTALL)
-    if not match:
-        # Fallback: find last quoted enum value and insert after it
-        last = list(re.finditer(r'^    \w+ = "[^"]+"', src, re.MULTILINE))
-        if not last:
-            raise RuntimeError("Could not find Platform enum in gateway/config.py")
-        pos = last[-1].end()
-        src = src[:pos] + "\n" + _NAPCAT_ENUM_LINE + src[pos:]
-    else:
-        # Insert after the last member found by the full pattern scan
-        last = list(re.finditer(r'^    \w+ = "[^"]+"', src, re.MULTILINE))
-        pos = last[-1].end()
-        src = src[:pos] + "\n" + _NAPCAT_ENUM_LINE + src[pos:]
-
-    _write(path, src)
-    print("  [+] Patched gateway/config.py (Platform.NAPCAT)")
-
-
-def _unpatch_config(hermes_root: Path) -> None:
-    path = hermes_root / "gateway" / "config.py"
-    if _restore(path):
-        print("  [-] Restored gateway/config.py")
-
-
-# ── Step 3: patch gateway/run.py ─────────────────────────────────────────────
-
-_RUN_MARKER = "# napcat-installed"
-
-
-def _patch_run(hermes_root: Path) -> None:
-    path = hermes_root / "gateway" / "run.py"
-    _backup(path)
-    src = _read(path)
-
-    if _RUN_MARKER in src:
-        print("  [=] gateway/run.py already patched")
-        return
-
-    # Locate _create_adapter function definition
-    func_match = re.search(r'^([ \t]*)def _create_adapter\(', src, re.MULTILINE)
-    if not func_match:
-        raise RuntimeError("Could not find _create_adapter in gateway/run.py")
-    func_pos = func_match.start()
-
-    # Detect body indentation from the first elif/return inside the function
-    body_match = re.search(r'\n([ \t]+)(elif|return)\s', src[func_pos:])
-    body_indent = body_match.group(1) if body_match else "        "
-    inner_indent = body_indent + "    "
-
-    napcat_block = (
-        f"\n{body_indent}elif platform == Platform.NAPCAT:  {_RUN_MARKER}\n"
-        f"{inner_indent}from gateway.platforms.napcat import NapCatAdapter, check_napcat_requirements\n"
-        f"{inner_indent}if not check_napcat_requirements():\n"
-        f"{inner_indent}    logger.warning('NapCat: aiohttp not installed')\n"
-        f"{inner_indent}    return None\n"
-        f"{inner_indent}return NapCatAdapter(config)\n"
+    # Merge platforms.napcat
+    cfg.setdefault("platforms", {})
+    if not isinstance(cfg["platforms"], dict):
+        cfg["platforms"] = {}
+    cfg["platforms"]["napcat"] = _napcat_platform_block(
+        ws_port, ws_path, access_token, qq, admins=admins
     )
 
-    # Insert before the final "return None" inside _create_adapter
-    return_match = re.search(
-        r'(?m)^' + re.escape(body_indent) + r'return None\b',
-        src[func_pos:],
-    )
-    if return_match:
-        insert_pos = func_pos + return_match.start()
-        src = src[:insert_pos] + napcat_block + src[insert_pos:]
-    else:
-        # Fallback: insert after the last elif at body indent level
-        last_elif = list(re.finditer(
-            r'(?m)^' + re.escape(body_indent) + r'elif platform == Platform\.\w+:',
-            src[func_pos:],
-        ))
-        if not last_elif:
-            raise RuntimeError("Could not find adapter dispatch in gateway/run.py")
-        pos = func_pos + last_elif[-1].start()
-        next_block = re.search(
-            r'\n' + re.escape(body_indent) + r'(elif|else|return)', src[pos:]
-        )
-        insert_pos = pos + next_block.start(0) + 1 if next_block else len(src)
-        src = src[:insert_pos] + napcat_block + src[insert_pos:]
+    # Give NapCat the full Hermes CLI toolset + QQ tools.  (The plugin's own
+    # ``hermes-napcat`` toolset is auto-enabled; ``hermes-cli`` provides the
+    # terminal / file / web_search tools the agent may use from QQ.)
+    cfg.setdefault("platform_toolsets", {})
+    if not isinstance(cfg["platform_toolsets"], dict):
+        cfg["platform_toolsets"] = {}
+    cfg["platform_toolsets"]["napcat"] = ["hermes-cli", "hermes-napcat"]
 
-    _write(path, src)
-    print("  [+] Patched gateway/run.py (_create_adapter)")
+    cfg.setdefault("group_sessions_per_user", False)
+
+    with cfg_path.open("w", encoding="utf-8") as f:
+        yaml.dump(cfg, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+
+    return True, str(cfg_path)
 
 
-def _unpatch_run(hermes_root: Path) -> None:
-    path = hermes_root / "gateway" / "run.py"
-    if _restore(path):
-        print("  [-] Restored gateway/run.py")
+def clean_hermes_config() -> tuple[bool, str]:
+    """Remove the napcat sections from ``~/.hermes/config.yaml``."""
+    try:
+        import yaml
+    except ImportError:
+        try:
+            _pip_install("pyyaml")
+            import yaml
+        except Exception as e:
+            return False, f"pyyaml not installed and auto-install failed: {e}"
 
+    cfg_path = config_path()
+    if not cfg_path.exists():
+        return False, f"Config not found: {cfg_path}"
 
-# ── Step 4: patch toolsets.py ────────────────────────────────────────────────
+    with cfg_path.open(encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
 
-_TOOLSETS_MARKER = "# napcat-installed"
-_NAPCAT_TOOLSET_BLOCK = (
-    '\n    "hermes-napcat": {  ' + _TOOLSETS_MARKER + '\n'
-    '        "description": "QQ (NapCat / OneBot 11) toolset — group management, messaging, files",\n'
-    '        "tools": [\n'
-    '            "qq_like_user", "qq_get_user_info", "qq_get_group_info",\n'
-    '            "qq_get_group_member_info", "qq_mute_group_member", "qq_kick_group_member",\n'
-    '            "qq_poke", "qq_recall_message", "qq_set_group_card", "qq_get_friend_list",\n'
-    '            "qq_get_group_list", "qq_get_group_member_list", "qq_set_group_admin",\n'
-    '            "qq_set_group_name", "qq_set_group_whole_ban", "qq_send_group_notice",\n'
-    '            "qq_get_group_honor_info", "qq_send_message", "qq_upload_file",\n'
-    '            "qq_forward_message", "qq_set_group_special_title", "qq_leave_group",\n'
-    '            "qq_handle_friend_request", "qq_handle_group_request",\n'
-    '            "qq_get_group_msg_history", "qq_get_friend_msg_history",\n'
-    '            "qq_get_essence_msg_list", "qq_set_essence_msg", "qq_delete_essence_msg",\n'
-    '            "qq_set_msg_emoji_like", "qq_ocr_image", "qq_set_friend_remark",\n'
-    '            "qq_delete_friend", "qq_get_group_root_files", "qq_get_group_file_url",\n'
-    '            "qq_create_group_file_folder", "qq_delete_group_file",\n'
-    '            "qq_get_group_notice", "qq_delete_group_notice", "qq_set_group_portrait",\n'
-    '            "qq_send_group_forward_msg", "qq_send_private_forward_msg",\n'
-    '            "qq_mark_msg_as_read", "qq_get_group_at_all_remain",\n'
-    '            "qq_translate_en2zh", "qq_download_file", "qq_set_group_sign",\n'
-    '            "qq_set_group_remark",\n'
-    '        ],\n'
-    '        "includes": [],\n'
-    '    },\n'
-)
+    changed = False
+    if isinstance(cfg.get("platforms"), dict) and "napcat" in cfg["platforms"]:
+        del cfg["platforms"]["napcat"]
+        changed = True
+    if isinstance(cfg.get("platform_toolsets"), dict) and "napcat" in cfg["platform_toolsets"]:
+        del cfg["platform_toolsets"]["napcat"]
+        changed = True
 
-
-def _patch_toolsets(hermes_root: Path) -> None:
-    path = hermes_root / "toolsets.py"
-    if not path.exists():
-        print("  [!] toolsets.py not found — skipping toolset registration")
-        return
-    _backup(path)
-    src = _read(path)
-
-    if _TOOLSETS_MARKER in src:
-        print("  [=] toolsets.py already patched")
-        return
-
-    # Add "hermes-napcat" to hermes-gateway includes list
-    def _add_to_gateway_includes(text: str) -> str:
-        pattern = r'("hermes-gateway".*?"includes"\s*:\s*\[)(.*?)(\])'
-        m = re.search(pattern, text, re.DOTALL)
-        if m:
-            includes_content = m.group(2)
-            if '"hermes-napcat"' not in includes_content:
-                # Ensure last item ends with a comma before appending
-                trimmed = includes_content.rstrip()
-                if trimmed and not trimmed.endswith(','):
-                    trimmed += ','
-                new_includes = trimmed + '\n        "hermes-napcat",  ' + _TOOLSETS_MARKER + "\n    "
-                text = text[:m.start(2)] + new_includes + text[m.end(2):]
-        return text
-
-    # Insert the napcat toolset block before the last closing brace of TOOLSETS.
-    # The block already ends with '},\n' so the dict entry is properly terminated.
-    last_brace = src.rfind("\n}")
-    if last_brace == -1:
-        print("  [!] Cannot locate TOOLSETS dict end — skipping")
-        return
-
-    # Ensure the entry just before the insertion point ends with a comma.
-    before = src[:last_brace].rstrip()
-    if before and not before.endswith(','):
-        src = before + ',\n' + _NAPCAT_TOOLSET_BLOCK + src[last_brace:]
-    else:
-        src = src[:last_brace] + _NAPCAT_TOOLSET_BLOCK + src[last_brace:]
-    src = _add_to_gateway_includes(src)
-
-    _write(path, src)
-    print("  [+] Patched toolsets.py (hermes-napcat toolset)")
-
-
-def _unpatch_toolsets(hermes_root: Path) -> None:
-    path = hermes_root / "toolsets.py"
-    if path.exists() and _restore(path):
-        print("  [-] Restored toolsets.py")
-
-
-# ── Step 5: patch hermes_cli/platforms.py ────────────────────────────────────
-
-_PLATFORMS_MARKER = "# napcat-installed"
-_NAPCAT_PLATFORMS_LINE = (
-    '    ("napcat",         PlatformInfo(label="🐧 NapCat (QQ)",     default_toolset="hermes-napcat")),  '
-    + _PLATFORMS_MARKER
-)
-
-
-def _patch_platforms(hermes_root: Path) -> None:
-    path = hermes_root / "hermes_cli" / "platforms.py"
-    if not path.exists():
-        print("  [!] hermes_cli/platforms.py not found — skipping")
-        return
-    _backup(path)
-    src = _read(path)
-
-    if _PLATFORMS_MARKER in src:
-        print("  [=] hermes_cli/platforms.py already patched")
-        return
-
-    # Insert napcat entry before the webhook entry
-    target = '    ("webhook",'
-    if target in src:
-        src = src.replace(target, _NAPCAT_PLATFORMS_LINE + "\n" + target)
-    else:
-        # Fallback: insert after the last PlatformInfo line
-        last = list(re.finditer(r'^    \("[^"]+",\s+PlatformInfo', src, re.MULTILINE))
-        if not last:
-            raise RuntimeError("Cannot find PLATFORMS list in hermes_cli/platforms.py")
-        eol = src.index("\n", last[-1].end())
-        src = src[:eol + 1] + _NAPCAT_PLATFORMS_LINE + "\n" + src[eol + 1:]
-
-    _write(path, src)
-    print("  [+] Patched hermes_cli/platforms.py (napcat platform entry)")
-
-
-def _unpatch_platforms(hermes_root: Path) -> None:
-    path = hermes_root / "hermes_cli" / "platforms.py"
-    if path.exists() and _restore(path):
-        print("  [-] Restored hermes_cli/platforms.py")
-
-
-# ── Step 6: patch gateway/run.py _is_user_authorized ─────────────────────────
-
-_RUN_AUTH_MARKER = "# napcat-installed-auth"
-_RUN_AUTH_TARGET = "if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):"
-_RUN_AUTH_REPLACEMENT = (
-    "if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.NAPCAT):  "
-    + _RUN_AUTH_MARKER
-)
-
-
-def _patch_run_auth(hermes_root: Path) -> None:
-    path = hermes_root / "gateway" / "run.py"
-    src = _read(path)
-
-    if _RUN_AUTH_MARKER in src:
-        print("  [=] gateway/run.py auth bypass already patched")
-        return
-
-    if _RUN_AUTH_TARGET not in src:
-        print("  [!] gateway/run.py: auth check pattern not found — skipping")
-        return
-
-    # _backup is a no-op if run.py.napcat.bak already exists from _patch_run
-    _backup(path)
-    src = src.replace(_RUN_AUTH_TARGET, _RUN_AUTH_REPLACEMENT, 1)
-    _write(path, src)
-    print("  [+] Patched gateway/run.py (NapCat auth bypass)")
-
-
-def _unpatch_run_auth(hermes_root: Path) -> None:
-    path = hermes_root / "gateway" / "run.py"
-    src = _read(path)
-    if _RUN_AUTH_MARKER not in src:
-        return
-    src = src.replace(_RUN_AUTH_REPLACEMENT, _RUN_AUTH_TARGET, 1)
-    _write(path, src)
-    print("  [-] Removed NapCat auth bypass from gateway/run.py")
-
-
-# ── Step 7: install skill file ────────────────────────────────────────────────
-
-def _install_skill(hermes_root: Path) -> None:
-    skill_src = Path(__file__).parent / "skills" / "qq" / "SKILL.md"
-    if not skill_src.exists():
-        print("  [!] skills/qq/SKILL.md not found in package — skipping")
-        return
-    dst_dir = hermes_root / "skills" / "qq"
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    dst = dst_dir / "SKILL.md"
-    shutil.copy2(skill_src, dst)
-    print(f"  [+] Installed skill       → {dst}")
-
-
-def _uninstall_skill(hermes_root: Path) -> None:
-    dst = hermes_root / "skills" / "qq" / "SKILL.md"
-    if dst.exists():
-        dst.unlink()
-        print(f"  [-] Removed skill ({dst})")
-    parent = dst.parent
-    if parent.exists() and not any(parent.iterdir()):
-        parent.rmdir()
+    if changed:
+        with cfg_path.open("w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        return True, str(cfg_path)
+    return True, "nothing to clean"
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def install(hermes_dir: str | None = None) -> None:
-    root = find_hermes_dir(hermes_dir)
-    print(f"\nInstalling hermes-napcat into: {root}\n")
-    _install_adapter(root)
-    _patch_config(root)
-    _patch_run(root)
-    _patch_toolsets(root)
-    _patch_platforms(root)
-    _patch_run_auth(root)
-    _install_skill(root)
-    print("\n✓ Installation complete.\n")
-    print("Add the following to ~/.hermes/config.yaml:\n")
-    print("  platforms:")
-    print("    napcat:")
-    print("      enabled: true")
-    print("      extras:")
-    print('        http_api: "http://127.0.0.1:18801"')
-    print('        access_token: ""')
-    print('        self_id: "YOUR_QQ_NUMBER"')
-    print("        ws_port: 18800")
-    print('        dm_policy: "allowlist"')
-    print("        allow_from: []")
-    print("        admins: []")
+def install(
+    qq: str | None = None,
+    admins: list[str] | None = None,
+    ws_port: int = 18801,
+    ws_path: str = "/onebot/v11",
+    access_token: str = "",
+) -> None:
+    """Install hermes-napcat as a Hermes plugin + write config."""
+    print(f"\nInstalling hermes-napcat as a Hermes plugin\n")
+    print(f"  Hermes home: {hermes_home()}")
+
+    dst = install_plugin()
+    print(f"  [+] Plugin copied        → {dst}")
+
+    ok, msg = write_hermes_config(ws_port, ws_path, access_token, qq, admins=admins)
+    if ok:
+        print(f"  [+] Config merged        → {msg}")
+    else:
+        print(f"  [!] Config not written   → {msg}")
+        print("      Add the platform block manually (see README).")
+
+    print("\n✓ Plugin installed. Next steps:")
+    print(f"  1. Make sure NapCat's reverse-WebSocket item points to")
+    print(f"     ws://127.0.0.1:{ws_port}{ws_path}  (Universal / array format).")
+    print(f"  2. Start the gateway:  hermes gateway run")
+    print("     → it will discover the plugin and wait for NapCat to dial in.")
+
+
+def uninstall(yes: bool = False) -> None:
+    """Remove the plugin directory and its config block."""
+    print(f"\nUninstalling hermes-napcat from {hermes_home()}\n")
+    if install_plugin_check() and not yes:
+        ans = input("  Remove the napcat plugin and its config? (yes/no): ").strip().lower()
+        if ans not in ("yes", "y"):
+            print("  Uninstall cancelled.")
+            return
+
+    removed = uninstall_plugin()
+    print(f"  {'[-] Removed plugin' if removed else '[=] Plugin not installed'} → {plugin_dest()}")
+
+    ok, msg = clean_hermes_config()
+    if ok:
+        print(f"  [+] Cleaned config: {msg}")
+    else:
+        print(f"  [!] Config cleanup: {msg}")
+
+    print("\n✓ Uninstall complete. Restart the gateway for changes to take effect.")
+
+
+def install_plugin_check() -> bool:
+    """Return True if the plugin directory is currently installed."""
+    return plugin_dest().exists()
+
+
+def status() -> None:
+    """Show installation status."""
+    dst = plugin_dest()
+    cfg = config_path()
+    print(f"\nhermes-napcat status")
+    print(f"  Hermes home:      {hermes_home()}")
+    print(f"  plugin dir:       {'✓ ' + str(dst) if dst.exists() else '✗ not installed'}")
+    manifest = dst / "plugin.yaml"
+    print(f"  plugin.yaml:      {'✓' if manifest.exists() else '✗'}")
+    print(f"  config.yaml:      {'✓' if cfg.exists() else '✗ missing'}")
+    if dst.exists():
+        py_files = [p for p in dst.rglob("*.py")]
+        print(f"  plugin modules:   {len(py_files)}")
     print()
-    print("Configure NapCat reverse WebSocket:")
-    print('  { "reverseWebSocket": [{ "url": "ws://127.0.0.1:18800" }] }')
-    print()
-
-
-def uninstall(hermes_dir: str | None = None) -> None:
-    root = find_hermes_dir(hermes_dir)
-    print(f"\nUninstalling hermes-napcat from: {root}\n")
-    _uninstall_adapter(root)
-    _unpatch_config(root)
-    _unpatch_run(root)
-    _unpatch_toolsets(root)
-    _unpatch_platforms(root)
-    _unpatch_run_auth(root)
-    _uninstall_skill(root)
-    print("\n✓ Uninstall complete.\n")
-
-
-def status(hermes_dir: str | None = None) -> None:
-    root = find_hermes_dir(hermes_dir)
-    adapter = root / "gateway" / "platforms" / "napcat.py"
-    qq_tool = root / "tools" / "qq_tool.py"
-    config_patched = _CONFIG_MARKER in _read(root / "gateway" / "config.py")
-    run_patched = _RUN_MARKER in _read(root / "gateway" / "run.py")
-    ts_path = root / "toolsets.py"
-    toolsets_patched = _TOOLSETS_MARKER in _read(ts_path) if ts_path.exists() else False
-
-    platforms_path = root / "hermes_cli" / "platforms.py"
-    platforms_patched = (
-        _PLATFORMS_MARKER in _read(platforms_path)
-        if platforms_path.exists() else False
-    )
-    run_src = _read(root / "gateway" / "run.py")
-    run_auth_patched = _RUN_AUTH_MARKER in run_src
-    skill_installed = (root / "skills" / "qq" / "SKILL.md").exists()
-
-    print(f"\nhermes-napcat status in: {root}")
-    print(f"  adapter file:   {'✓' if adapter.exists() else '✗'}")
-    print(f"  qq_tool file:   {'✓' if qq_tool.exists() else '✗'}")
-    print(f"  config.py:      {'✓' if config_patched else '✗'}")
-    print(f"  run.py:         {'✓' if run_patched else '✗'}")
-    print(f"  toolsets.py:    {'✓' if toolsets_patched else '✗ (optional)'}")
-    print(f"  platforms.py:   {'✓' if platforms_patched else '✗'}")
-    print(f"  run.py auth:    {'✓' if run_auth_patched else '✗'}")
-    print(f"  skill (qq):     {'✓' if skill_installed else '✗'}")
-    all_ok = (adapter.exists() and qq_tool.exists() and config_patched
-              and run_patched and platforms_patched and run_auth_patched
-              and skill_installed)
-    print(f"\n  {'Fully installed' if all_ok else 'Not fully installed'}")
-    print()
+    if not dst.exists():
+        print("  Run `hermes-napcat setup` to install.")
+        print()

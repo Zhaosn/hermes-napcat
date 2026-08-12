@@ -15,7 +15,7 @@ metadata:
 
 # QQ (NapCat / OneBot 11)
 
-NapCat is a headless QQ client that exposes the OneBot 11 API. Hermes connects to it via a reverse WebSocket. All tools in this skill call the NapCat HTTP API and are prefixed `qq_`.
+NapCat is a headless QQ client that exposes the OneBot 11 API. Hermes connects to it via a reverse WebSocket: the Hermes adapter runs a WS server (default `ws://0.0.0.0:18801/onebot/v11`) and NapCat dials in as the client in Universal mode (API + events over one full-duplex connection). All tools in this skill are prefixed `qq_`.
 
 Use this skill for:
 - Sending text, images, files, reactions, and merged-forward messages to groups or private chats
@@ -443,7 +443,7 @@ Parse the returned `messages` array. Each entry has: `message_id`, `sender.user_
 
 | Symptom | Likely Cause | Fix |
 |---|---|---|
-| `NapCat HTTP API not configured` | Adapter not running or misconfigured | Check `~/.hermes/config.yaml` `platforms.napcat.extra.http_api`; restart gateway |
+| `NapCat 尚未连接` | Adapter not connected (no reverse-WS dial-in) | Check NapCat's reverse-WS item points at `ws://127.0.0.1:{ws_port}{ws_path}` (Universal role) and the gateway is running |
 | `Permission denied: only admins can use this command` | Caller not in admins list | Add caller's QQ to `admins` in config, or leave `admins: []` for open mode |
 | `OneBot API error: RETCODE=100` | Invalid parameter (wrong ID type, missing field) | Check group_id/user_id are numeric strings |
 | `OneBot API error: RETCODE=1000` | NapCat internal error (usually rate limit or QQ restrictions) | Wait and retry; check if bot has sufficient permissions in the group |
