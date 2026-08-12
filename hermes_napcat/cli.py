@@ -30,15 +30,6 @@ def _ask_int(prompt: str, default: int) -> int:
             print("    Please enter a number.")
 
 
-def _ask_choice(prompt: str, choices: list[str], default: str) -> str:
-    options = "/".join(c.upper() if c == default else c for c in choices)
-    while True:
-        raw = _ask(f"{prompt} ({options})", default).lower()
-        if raw in choices:
-            return raw
-        print(f"    Please enter one of: {', '.join(choices)}")
-
-
 def _port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
@@ -108,20 +99,6 @@ def _interactive_setup() -> dict:
     print("=" * 52)
     print("  Press Enter to accept the default [shown in brackets].\n")
 
-    # ── Mode ──────────────────────────────────────────────────────────────────
-    print("  Setup mode:")
-    print("    1  Hermes-NapCat only  — patch Hermes + write config")
-    print("       (you manage NapCat yourself)")
-    print("    2  Hermes-NapCat + NapCat  — also download & install NapCat\n")
-    while True:
-        choice = _ask("Choice", "1")
-        if choice in ("1", "2"):
-            with_napcat = choice == "2"
-            break
-        print("    Please enter 1 or 2.")
-
-    print()
-
     # ── Hermes location ───────────────────────────────────────────────────────
     print("  Hermes Agent location:")
     hermes_dir = _ask("Path to hermes-agent source (blank = auto-detect)", "")
@@ -166,7 +143,6 @@ def _interactive_setup() -> dict:
 
     # ── Summary ───────────────────────────────────────────────────────────────
     print("  ── Summary " + "─" * 40)
-    print(f"  Mode:         {'Hermes-NapCat + NapCat install' if with_napcat else 'Hermes-NapCat only'}")
     print(f"  Hermes dir:   {hermes_dir or '(auto-detect)'}")
     print(f"  QQ number:    {qq or '(none)'}")
     print(f"  Admins:       {', '.join(admins) if admins else '(open mode)'}")
@@ -184,7 +160,6 @@ def _interactive_setup() -> dict:
             sys.exit(0)
 
     return dict(
-        with_napcat=with_napcat,
         hermes_dir=hermes_dir,
         qq=qq,
         admins=admins,
@@ -217,17 +192,10 @@ def main(argv: list[str] | None = None) -> None:
     # ── uninstall ─────────────────────────────────────────────────────────────
     uninstall_p = sub.add_parser(
         "uninstall",
-        help="Remove NapCat support (Hermes patches + NapCat binary by default)",
+        help="Remove NapCat support (Hermes patches + config)",
     )
     uninstall_p.add_argument("--hermes-dir", metavar="PATH", default=None,
                              help="Path to hermes-agent source (auto-detected if omitted)")
-    uninstall_scope = uninstall_p.add_mutually_exclusive_group()
-    uninstall_scope.add_argument("--hermes-only", action="store_true", default=False,
-                                 help="Remove only Hermes patches (keep NapCat binary)")
-    uninstall_scope.add_argument("--napcat-only", action="store_true", default=False,
-                                 help="Remove only NapCat binary and data (keep Hermes patches)")
-    uninstall_p.add_argument("--keep-data", action="store_true", default=False,
-                             help="Keep QQ session data when removing NapCat")
     uninstall_p.add_argument("-y", "--yes", action="store_true", default=False,
                              help="Skip confirmation prompt")
 
@@ -236,7 +204,8 @@ def main(argv: list[str] | None = None) -> None:
         "setup",
         help="Interactive setup wizard — configure everything in one go",
         description=(
-            "Interactive setup: patches Hermes Agent and optionally installs NapCat.\n"
+            "Interactive setup: patches Hermes Agent and writes the NapCat / "
+            "Hermes config. It does not install or launch NapCat.\n"
             "Run with no flags for the full interactive wizard.\n"
             "Supply flags to skip individual prompts (useful for scripting)."
         ),
@@ -255,38 +224,6 @@ def main(argv: list[str] | None = None) -> None:
     setup_p.add_argument("--token", metavar="TOKEN", default=None,
                          help="Access token (default: none)")
 
-    mode = setup_p.add_mutually_exclusive_group()
-    mode.add_argument("--with-napcat", action="store_true", default=False,
-                      help="Also download and install NapCat (skips mode prompt)")
-    mode.add_argument("--hermes-only", action="store_true", default=False,
-                      help="Patch Hermes only, skip NapCat install (skips mode prompt)")
-
-    # ── napcat process management ─────────────────────────────────────────────
-    napcat_p = sub.add_parser("napcat", help="Manage the NapCat process")
-    napcat_sub = napcat_p.add_subparsers(dest="napcat_command", required=True)
-
-    nc_start = napcat_sub.add_parser("start", help="Start NapCat in a detached screen session")
-    nc_start.add_argument("--qq", metavar="QQ_NUMBER", default=None,
-                          help="QQ number to pass to NapCat (-q flag)")
-
-    napcat_sub.add_parser("stop",   help="Stop the NapCat screen session")
-    napcat_sub.add_parser("status", help="Show NapCat installation and process status")
-
-    # ── restart ───────────────────────────────────────────────────────────────
-    restart_p = sub.add_parser("restart", help="Restart NapCat and Hermes Gateway")
-    restart_p.add_argument("--qq", metavar="QQ_NUMBER", default=None,
-                           help="QQ number to pass to NapCat on restart")
-
-    # ── systemd ───────────────────────────────────────────────────────────────
-    systemd_p = sub.add_parser("systemd", help="Manage systemd service files")
-    systemd_sub = systemd_p.add_subparsers(dest="systemd_command", required=True)
-
-    sd_install = systemd_sub.add_parser("install", help="Create and enable systemd services")
-    sd_install.add_argument("--qq", metavar="QQ_NUMBER", default=None,
-                            help="QQ number to embed in the NapCat service unit")
-
-    systemd_sub.add_parser("remove", help="Stop, disable and remove systemd services")
-
     args = parser.parse_args(argv)
 
     try:
@@ -294,38 +231,22 @@ def main(argv: list[str] | None = None) -> None:
             install(args.hermes_dir)
 
         elif args.command == "uninstall":
-            from .napcat import uninstall_napcat, clean_hermes_config
-
-            do_hermes = not args.napcat_only
-            do_napcat = not args.hermes_only
-
-            # Describe what will be removed
-            parts = []
-            if do_hermes:
-                parts.append("Hermes patches + config")
-            if do_napcat:
-                parts.append("NapCat binary" + (" + QQ session data" if not args.keep_data else ""))
-            description = " and ".join(parts)
+            from .napcat import clean_hermes_config
 
             if not args.yes:
-                print(f"\nThis will remove: {description}")
+                print("\nThis will remove: Hermes patches + config")
                 ans = _ask("Are you sure? (yes/no)", "no").lower()
                 if ans not in ("yes", "y"):
                     print("Uninstall cancelled.")
                     return
 
-            if do_hermes:
-                print("\nRemoving Hermes patches...")
-                uninstall(args.hermes_dir)
-                ok, msg = clean_hermes_config()
-                if ok:
-                    print(f"  [+] Cleaned ~/.hermes/config.yaml: {msg}")
-                else:
-                    print(f"  [!] Config cleanup: {msg}")
-
-            if do_napcat:
-                print("\nRemoving NapCat...")
-                uninstall_napcat(remove_data=not args.keep_data)
+            print("\nRemoving Hermes patches...")
+            uninstall(args.hermes_dir)
+            ok, msg = clean_hermes_config()
+            if ok:
+                print(f"  [+] Cleaned ~/.hermes/config.yaml: {msg}")
+            else:
+                print(f"  [!] Config cleanup: {msg}")
 
             print("\n✓ Uninstall complete.")
 
@@ -333,21 +254,20 @@ def main(argv: list[str] | None = None) -> None:
             status(args.hermes_dir)
 
         elif args.command == "setup":
-            from .napcat import setup_hermes_only, setup_with_napcat
+            from .napcat import setup
 
             # Determine if any flags were supplied to skip the wizard
             flags_supplied = any([
                 args.hermes_dir, args.qq,
                 args.admins is not None,
                 args.ws_port is not None, args.http_port is not None,
-                args.token is not None, args.with_napcat, args.hermes_only,
+                args.token is not None,
             ])
 
             if flags_supplied or not sys.stdin.isatty():
                 # Non-interactive: use flags, fill defaults for anything omitted
                 admins = _parse_admins(args.admins or "", args.qq) if (args.admins or args.qq) else []
                 cfg = dict(
-                    with_napcat=args.with_napcat and not args.hermes_only,
                     hermes_dir=args.hermes_dir,
                     qq=args.qq,
                     admins=admins,
@@ -356,36 +276,12 @@ def main(argv: list[str] | None = None) -> None:
                     access_token=args.token or "",
                 )
                 if not sys.stdin.isatty() and not flags_supplied:
-                    print("Non-interactive: using all defaults (Hermes-only, ports 18800/18801).")
+                    print("Non-interactive: using all defaults (ports 18800/18801).")
             else:
                 # Full interactive wizard
                 cfg = _interactive_setup()
 
-            kwargs = {k: cfg[k] for k in ("qq", "admins", "ws_port", "http_port", "access_token", "hermes_dir")}
-            if cfg["with_napcat"]:
-                setup_with_napcat(**kwargs)
-            else:
-                setup_hermes_only(**kwargs)
-
-        elif args.command == "napcat":
-            from .napcat import start_napcat, stop_napcat, napcat_status
-            if args.napcat_command == "start":
-                start_napcat(args.qq)
-            elif args.napcat_command == "stop":
-                stop_napcat()
-            elif args.napcat_command == "status":
-                napcat_status()
-
-        elif args.command == "restart":
-            from .napcat import restart_all
-            restart_all(args.qq)
-
-        elif args.command == "systemd":
-            from .napcat import install_systemd, remove_systemd
-            if args.systemd_command == "install":
-                install_systemd(args.qq)
-            elif args.systemd_command == "remove":
-                remove_systemd()
+            setup(**cfg)
 
     except FileNotFoundError as exc:
         print(f"Error: {exc}", file=sys.stderr)

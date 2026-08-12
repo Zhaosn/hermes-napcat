@@ -31,7 +31,7 @@ QQ App ──── NapCat ──WS──▶ hermes-napcat ──▶ Hermes (LLM
 - **48 QQ tools** — messaging, group management, files, OCR, reactions, and more
 - **Media support** — images, voice (→ WAV via ffmpeg), video, file upload/download
 - **Quoted message context** — replies carry the quoted content automatically
-- **One-command setup** — interactive wizard installs and configures everything
+- **One-command setup** — interactive wizard patches Hermes and writes the configs
 
 ---
 
@@ -61,31 +61,29 @@ hermes-napcat setup
 
 The wizard patches Hermes Agent, writes the NapCat config, updates `~/.hermes/config.yaml`, and asks for your QQ number and admin list.
 
-To also download and install NapCat automatically:
-
-```bash
-hermes-napcat setup --with-napcat
-```
-
 Non-interactive (CI / scripts):
 
 ```bash
-hermes-napcat setup --qq 123456789 --admins "123456789,987654321" --with-napcat
+hermes-napcat setup --qq 123456789 --admins "123456789,987654321"
 ```
 
-### 3. Start NapCat
+> hermes-napcat does **not** install or launch NapCat — you run NapCat yourself
+> (e.g. via the [official installer](https://github.com/NapNeko/NapCat-Installer)).
+> The setup step writes NapCat's `onebot11.json` so it dials into Hermes.
 
-```bash
-hermes-napcat napcat start
-```
+### 3. Install & start NapCat (on your own)
 
-The QR code prints directly in your terminal — scan it with the QQ app. On subsequent starts NapCat auto-logins from cached session, no QR needed.
+Install and start [NapCat](https://github.com/NapNeko/NapCatQQ) however you
+prefer. Once running, it reads the `onebot11.json` written by `setup` and
+dials out to Hermes' reverse WebSocket.
 
 ### 4. Start Hermes Gateway
 
 ```bash
 nohup hermes gateway run > /tmp/hermes-gateway.log 2>&1 &
 ```
+
+The gateway opens its reverse-WS listener and simply **waits for NapCat to connect** — no further action needed.
 
 ---
 
@@ -194,6 +192,8 @@ Destructive or irreversible admin actions always require explicit confirmation b
 
 ## How It Works
 
+hermes-napcat never launches NapCat — NapCat runs on its own. The Hermes gateway opens a reverse-WS listener on port 18800 and simply **waits for NapCat to connect**.
+
 1. **NapCat** dials out to `ws://127.0.0.1:18800` (reverse WebSocket)
 2. **hermes-napcat** receives the OneBot 11 event, extracts text/media, checks DM/group policy, prefixes sender name in group messages
 3. **Hermes Agent** processes the message with full tool access
@@ -213,39 +213,22 @@ Destructive or irreversible admin actions always require explicit confirmation b
 
 | Command | Description |
 |---------|-------------|
-| `hermes-napcat setup` | Interactive setup wizard |
-| `hermes-napcat setup --with-napcat` | Also download and install NapCat |
+| `hermes-napcat setup` | Interactive setup wizard — patches Hermes + writes configs |
 | `hermes-napcat install` | Patch Hermes Agent only |
-| `hermes-napcat uninstall` | Remove patches + NapCat (default: both) |
-| `hermes-napcat uninstall --hermes-only` | Remove Hermes patches only |
-| `hermes-napcat uninstall --napcat-only` | Remove NapCat binary only |
+| `hermes-napcat uninstall` | Remove Hermes patches + config |
 | `hermes-napcat status` | Show installation status |
-| `hermes-napcat napcat start` | Start NapCat (screen session) |
-| `hermes-napcat napcat stop` | Stop NapCat |
-| `hermes-napcat napcat status` | Show NapCat process status |
-| `hermes-napcat restart` | Restart NapCat + Hermes Gateway |
-| `hermes-napcat systemd install` | Create and enable systemd services |
-| `hermes-napcat systemd remove` | Remove systemd services |
+
+There are no NapCat process-management commands — NapCat is installed and run independently, and simply connects to Hermes when it starts.
 
 ---
 
 ## Uninstall
 
 ```bash
-hermes-napcat uninstall                  # Remove everything
-hermes-napcat uninstall --hermes-only    # Keep NapCat, remove Hermes patches
-hermes-napcat uninstall --napcat-only    # Keep Hermes patches, remove NapCat
-hermes-napcat uninstall --keep-data      # Keep QQ session data
+hermes-napcat uninstall    # Remove Hermes patches + config
 ```
 
----
-
-## Systemd (auto-start on reboot)
-
-```bash
-hermes-napcat systemd install    # creates napcat.service + hermes-gateway.service
-hermes-napcat systemd remove
-```
+NapCat itself is installed and managed separately, so uninstall never touches it.
 
 ---
 
@@ -259,7 +242,6 @@ hermes-napcat systemd remove
 | `KeyError: 'napcat'` | `platforms.py` not patched | Re-run `hermes-napcat install` |
 | `Unauthorized user` on all messages | `run.py` auth bypass missing | Re-run `hermes-napcat install` |
 | `Permission denied: only admins` | Sender not in admins list | Add QQ to `admins`, or set `admins: []` |
-| NapCat QR code not showing | Startup timeout | `tail -f /tmp/napcat.log` or `screen -r napcat` |
 
 ### Notes for specific providers
 

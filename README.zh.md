@@ -31,7 +31,7 @@ QQ客户端 ──── NapCat ──WS──▶ hermes-napcat ──▶ Hermes
 - **48 个 QQ 工具** — 消息、群管理、文件操作、OCR、表情回应等一应俱全
 - **多媒体支持** — 图片、语音（ffmpeg 转 WAV）、视频、文件上传下载
 - **引用消息上下文** — 回复消息时自动携带被引用内容
-- **一键安装向导** — 交互式向导自动完成安装和配置
+- **一键安装向导** — 交互式向导自动修补 Hermes 并写入配置
 
 ---
 
@@ -61,31 +61,27 @@ hermes-napcat setup
 
 向导会自动修补 Hermes Agent、写入 NapCat 配置、更新 `~/.hermes/config.yaml`，并询问你的 QQ 号和管理员列表。
 
-同时自动下载安装 NapCat：
-
-```bash
-hermes-napcat setup --with-napcat
-```
-
 非交互式安装（脚本/CI 环境）：
 
 ```bash
-hermes-napcat setup --qq 123456789 --admins "123456789,987654321" --with-napcat
+hermes-napcat setup --qq 123456789 --admins "123456789,987654321"
 ```
 
-### 3. 启动 NapCat
+> hermes-napcat **不负责**安装或启动 NapCat —— 你需要自行运行 NapCat
+> （例如使用[官方安装器](https://github.com/NapNeko/NapCat-Installer)）。
+> setup 步骤会写入 NapCat 的 `onebot11.json`，让 NapCat 主动连接 Hermes。
 
-```bash
-hermes-napcat napcat start
-```
+### 3. 自行安装并启动 NapCat
 
-二维码直接打印在终端，用 QQ 扫码登录。再次启动时自动从缓存 session 登录，无需重新扫码。
+按照你喜欢的方式安装并启动 [NapCat](https://github.com/NapNeko/NapCatQQ)。启动后它会读取 `setup` 写入的 `onebot11.json`，主动连接 Hermes 的反向 WebSocket。
 
 ### 4. 启动 Hermes 网关
 
 ```bash
 nohup hermes gateway run > /tmp/hermes-gateway.log 2>&1 &
 ```
+
+网关会开启反向 WS 监听端口，然后**仅等待 NapCat 建立连接** —— 无需其它操作。
 
 ---
 
@@ -194,6 +190,8 @@ admins:
 
 ## 工作原理
 
+hermes-napcat 从不拉起 NapCat —— NapCat 独立运行。Hermes 网关会开启 18800 端口反向 WS 监听，然后**仅等待 NapCat 建立连接**。
+
 1. **NapCat** 主动连接到 `ws://127.0.0.1:18800`（反向 WebSocket）
 2. **hermes-napcat** 接收 OneBot 11 事件，提取文字/媒体，检查私聊/群聊策略，群消息自动加发送者昵称前缀
 3. **Hermes Agent** 使用完整工具集处理消息
@@ -213,39 +211,22 @@ admins:
 
 | 命令 | 说明 |
 |------|------|
-| `hermes-napcat setup` | 交互式安装向导 |
-| `hermes-napcat setup --with-napcat` | 同时安装 NapCat |
+| `hermes-napcat setup` | 交互式安装向导 —— 修补 Hermes + 写入配置 |
 | `hermes-napcat install` | 仅修补 Hermes Agent |
-| `hermes-napcat uninstall` | 移除所有内容（默认：补丁 + NapCat） |
-| `hermes-napcat uninstall --hermes-only` | 仅移除 Hermes 补丁 |
-| `hermes-napcat uninstall --napcat-only` | 仅移除 NapCat 二进制 |
+| `hermes-napcat uninstall` | 移除 Hermes 补丁 + 配置 |
 | `hermes-napcat status` | 查看安装状态 |
-| `hermes-napcat napcat start` | 启动 NapCat（screen 会话） |
-| `hermes-napcat napcat stop` | 停止 NapCat |
-| `hermes-napcat napcat status` | 查看 NapCat 进程状态 |
-| `hermes-napcat restart` | 重启 NapCat + Hermes 网关 |
-| `hermes-napcat systemd install` | 创建并启用 systemd 服务 |
-| `hermes-napcat systemd remove` | 移除 systemd 服务 |
+
+没有 NapCat 进程管理命令 —— NapCat 由你独立安装和运行，启动后自动连接 Hermes。
 
 ---
 
 ## 卸载
 
 ```bash
-hermes-napcat uninstall                  # 移除所有内容
-hermes-napcat uninstall --hermes-only    # 保留 NapCat，仅移除 Hermes 补丁
-hermes-napcat uninstall --napcat-only    # 保留 Hermes 补丁，仅移除 NapCat
-hermes-napcat uninstall --keep-data      # 保留 QQ 会话数据
+hermes-napcat uninstall    # 移除 Hermes 补丁 + 配置
 ```
 
----
-
-## Systemd 服务（开机自启）
-
-```bash
-hermes-napcat systemd install    # 创建 napcat.service + hermes-gateway.service
-hermes-napcat systemd remove
-```
+NapCat 由你独立安装和管理，卸载不会触碰它。
 
 ---
 
@@ -259,7 +240,6 @@ hermes-napcat systemd remove
 | `KeyError: 'napcat'` | `platforms.py` 未打补丁 | 重新运行 `hermes-napcat install` |
 | 所有消息均提示 `Unauthorized user` | `run.py` 缺少认证绕过 | 重新运行 `hermes-napcat install` |
 | `Permission denied: only admins` | 发送者不在管理员列表 | 将 QQ 号加入 `admins`，或设置 `admins: []` |
-| NapCat 二维码未显示 | 启动超时 | `tail -f /tmp/napcat.log` 或 `screen -r napcat` |
 
 ### 特定 API 提供商说明
 
