@@ -338,7 +338,7 @@ async def _qq_get_group_msg_history(args: dict, **_) -> str:
         data = await _call(
             "get_group_msg_history",
             group_id=int(args["group_id"]),
-            message_id=args.get("message_id"),
+            message_seq=args.get("message_seq"),
             count=int(args.get("count", 20)),
         )
         return tool_result(data)
@@ -352,7 +352,10 @@ _register(
         "qq_get_group_msg_history", "Fetch recent message history from a group.",
         {
             "group_id": _str("Group ID"),
-            "message_id": _str("Fetch messages before this message_id (optional)"),
+            "message_seq": _str(
+                "Start from the message after this message_seq (sequence number; "
+                "fetches messages newer than it). Optional, defaults to latest."
+            ),
             "count": _int("Number of messages to fetch (default 20, max 100)"),
         },
         required=["group_id"],
@@ -369,7 +372,7 @@ async def _qq_get_friend_msg_history(args: dict, **_) -> str:
         data = await _call(
             "get_friend_msg_history",
             user_id=int(args["user_id"]),
-            message_id=args.get("message_id"),
+            message_seq=args.get("message_seq"),
             count=int(args.get("count", 20)),
         )
         return tool_result(data)
@@ -383,7 +386,10 @@ _register(
         "qq_get_friend_msg_history", "Fetch recent message history with a friend.",
         {
             "user_id": _str("Friend QQ number"),
-            "message_id": _str("Fetch messages before this message_id (optional)"),
+            "message_seq": _str(
+                "Start from the message after this message_seq (sequence number; "
+                "fetches messages newer than it). Optional, defaults to latest."
+            ),
             "count": _int("Number of messages to fetch (default 20)"),
         },
         required=["user_id"],
@@ -537,7 +543,7 @@ async def _qq_set_friend_remark(args: dict, **_) -> str:
         return tool_error(err)
     try:
         await _call(
-            "set_friend_add_request",
+            "set_friend_remark",
             user_id=int(args["user_id"]),
             remark=args.get("remark", ""),
         )
@@ -1460,7 +1466,10 @@ async def _qq_translate_en2zh(args: dict, **_) -> str:
     if err:
         return tool_error(err)
     try:
-        data = await _call("get_word_slices", content=args["content"])
+        words = args["words"]
+        if isinstance(words, str):
+            words = [words]
+        data = await _call("translate_en2zh", words=list(words))
         return tool_result(data)
     except Exception as e:
         return tool_error(str(e))
@@ -1469,9 +1478,724 @@ async def _qq_translate_en2zh(args: dict, **_) -> str:
 _register(
     "qq_translate_en2zh",
     _schema(
-        "qq_translate_en2zh", "Translate English text to Chinese using the QQ translation service.",
-        {"content": _str("English text to translate")},
-        required=["content"],
+        "qq_translate_en2zh",
+        "Translate a list of English words to Chinese using the QQ translation service "
+        "(translates individual words, not full sentences).",
+        {
+            "words": {
+                "type": "array",
+                "description": "English words to translate",
+                "items": {"type": "string"},
+            },
+        },
+        required=["words"],
     ),
     _qq_translate_en2zh,
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9. MEDIA & CONTENT
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _qq_get_file(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_file", file=args["file"])
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_file",
+    _schema(
+        "qq_get_file", "Resolve a file id/path/URL to its local path and download URL.",
+        {"file": _str("File id, local path or URL")},
+        required=["file"],
+    ),
+    _qq_get_file,
+)
+
+
+async def _qq_get_image(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_image", file=args["file"])
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_image",
+    _schema(
+        "qq_get_image", "Resolve an image id/path/URL to its local path and download URL.",
+        {"file": _str("Image id (e.g. from a received image segment), local path or URL")},
+        required=["file"],
+    ),
+    _qq_get_image,
+)
+
+
+async def _qq_get_record(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call(
+            "get_record",
+            file=args["file"],
+            out_format=args.get("out_format", "mp3"),
+        )
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_record",
+    _schema(
+        "qq_get_record", "Resolve a voice id/path/URL to a local path, converting format if needed.",
+        {
+            "file": _str("Voice id, local path or URL"),
+            "out_format": _str("Output format (e.g. mp3, wav, silk; default mp3)"),
+        },
+        required=["file"],
+    ),
+    _qq_get_record,
+)
+
+
+async def _qq_get_emoji_likes(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call(
+            "get_emoji_likes",
+            message_id=str(args["message_id"]),
+            emoji_id=str(args["emoji_id"]),
+            group_id=args.get("group_id"),
+            count=int(args.get("count", 0)),
+        )
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_emoji_likes",
+    _schema(
+        "qq_get_emoji_likes", "Get the list of users who reacted to a message with a given emoji.",
+        {
+            "message_id": _str("Message ID"),
+            "emoji_id": _str("Emoji ID"),
+            "group_id": _str("Group ID (optional for private chat)"),
+            "count": _int("Max users to return (0 = all, default)"),
+        },
+        required=["message_id", "emoji_id"],
+    ),
+    _qq_get_emoji_likes,
+)
+
+
+async def _qq_get_recent_contact(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_recent_contact", count=int(args.get("count", 10)))
+        return tool_result(data if isinstance(data, list) else [data])
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_recent_contact",
+    _schema(
+        "qq_get_recent_contact", "List the bot's most recent conversations (people/groups).",
+        {"count": _int("Number of recent chats to return (default 10)")},
+    ),
+    _qq_get_recent_contact,
+)
+
+
+async def _qq_create_flash_task(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        files = args["files"]
+        if isinstance(files, str):
+            files = [files]
+        data = await _call(
+            "create_flash_task",
+            files=list(files),
+            name=args.get("name", ""),
+        )
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_create_flash_task",
+    _schema(
+        "qq_create_flash_task", "Create a flash-photo (闪照) task from an image, returning a fileset_id for qq_send_flash_msg.",
+        {
+            "files": {
+                "type": "array",
+                "description": "Image path(s) to flash-send",
+                "items": {"type": "string"},
+            },
+            "name": _str("Task name (optional)"),
+        },
+        required=["files"],
+    ),
+    _qq_create_flash_task,
+)
+
+
+async def _qq_send_flash_msg(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call(
+            "send_flash_msg",
+            fileset_id=args["fileset_id"],
+            user_id=args.get("user_id"),
+            group_id=args.get("group_id"),
+        )
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_send_flash_msg",
+    _schema(
+        "qq_send_flash_msg", "Send a flash message (闪照) to a group or private chat using a fileset_id from qq_create_flash_task.",
+        {
+            "fileset_id": _str("fileset_id from qq_create_flash_task"),
+            "group_id": _str("Target group ID (mutually exclusive with user_id)"),
+            "user_id": _str("Target user QQ number"),
+        },
+        required=["fileset_id"],
+    ),
+    _qq_send_flash_msg,
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. GROUP EXTENDED
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _qq_kick_group_members(args: dict, **_) -> str:
+    err = _check() or _require_admin()
+    if err:
+        return tool_error(err)
+    try:
+        users = args["user_id"]
+        if isinstance(users, str):
+            users = [users]
+        await _call(
+            "set_group_kick_members",
+            group_id=int(args["group_id"]),
+            user_id=[str(u) for u in users],
+            reject_add_request=args.get("reject_add_request", False),
+        )
+        return tool_result(success=True)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_kick_group_members",
+    _schema(
+        "qq_kick_group_members", "Kick multiple members from a group in one call. Requires admin.",
+        {
+            "group_id": _str("Group ID"),
+            "user_id": {
+                "type": "array",
+                "description": "QQ numbers to kick",
+                "items": {"type": "string"},
+            },
+            "reject_add_request": _bool("Also block them from rejoining (default false)"),
+        },
+        required=["group_id", "user_id"],
+    ),
+    _qq_kick_group_members,
+)
+
+
+async def _qq_get_group_shut_list(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_group_shut_list", group_id=int(args["group_id"]))
+        return tool_result(data if isinstance(data, list) else [data])
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_group_shut_list",
+    _schema(
+        "qq_get_group_shut_list", "List the currently muted members of a group.",
+        {"group_id": _str("Group ID")},
+        required=["group_id"],
+    ),
+    _qq_get_group_shut_list,
+)
+
+
+async def _qq_get_group_detail_info(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_group_detail_info", group_id=int(args["group_id"]))
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_group_detail_info",
+    _schema(
+        "qq_get_group_detail_info", "Get detailed group info (member count, whole-ban state, remark, etc.).",
+        {"group_id": _str("Group ID")},
+        required=["group_id"],
+    ),
+    _qq_get_group_detail_info,
+)
+
+
+async def _qq_get_group_files_by_folder(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call(
+            "get_group_files_by_folder",
+            group_id=int(args["group_id"]),
+            folder_id=args.get("folder_id", "/"),
+            file_count=int(args.get("file_count", 50)),
+        )
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_group_files_by_folder",
+    _schema(
+        "qq_get_group_files_by_folder", "List files and sub-folders inside a group file folder.",
+        {
+            "group_id": _str("Group ID"),
+            "folder_id": _str("Folder ID (default '/' for root)"),
+            "file_count": _int("Max entries to return (default 50)"),
+        },
+        required=["group_id"],
+    ),
+    _qq_get_group_files_by_folder,
+)
+
+
+async def _qq_delete_group_folder(args: dict, **_) -> str:
+    err = _check() or _require_admin()
+    if err:
+        return tool_error(err)
+    try:
+        await _call(
+            "delete_group_folder",
+            group_id=int(args["group_id"]),
+            folder_id=args["folder_id"],
+        )
+        return tool_result(success=True)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_delete_group_folder",
+    _schema(
+        "qq_delete_group_folder", "Delete a folder from the group file system. Requires admin.",
+        {
+            "group_id": _str("Group ID"),
+            "folder_id": _str("Folder ID"),
+        },
+        required=["group_id", "folder_id"],
+    ),
+    _qq_delete_group_folder,
+)
+
+
+async def _qq_get_group_file_system_info(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_group_file_system_info", group_id=int(args["group_id"]))
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_group_file_system_info",
+    _schema(
+        "qq_get_group_file_system_info", "Get a group file system's usage (file count, space used/limit).",
+        {"group_id": _str("Group ID")},
+        required=["group_id"],
+    ),
+    _qq_get_group_file_system_info,
+)
+
+
+async def _qq_set_group_todo(args: dict, **_) -> str:
+    err = _check() or _require_admin()
+    if err:
+        return tool_error(err)
+    try:
+        await _call(
+            "set_group_todo",
+            group_id=int(args["group_id"]),
+            message_id=str(args["message_id"]),
+        )
+        return tool_result(success=True)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_set_group_todo",
+    _schema(
+        "qq_set_group_todo", "Turn a group message into a group todo (待办). Requires admin.",
+        {
+            "group_id": _str("Group ID"),
+            "message_id": _str("Message ID to pin as todo"),
+        },
+        required=["group_id", "message_id"],
+    ),
+    _qq_set_group_todo,
+)
+
+
+async def _qq_complete_group_todo(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        await _call(
+            "complete_group_todo",
+            group_id=int(args["group_id"]),
+            message_id=str(args["message_id"]),
+        )
+        return tool_result(success=True)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_complete_group_todo",
+    _schema(
+        "qq_complete_group_todo", "Mark a group todo as completed.",
+        {
+            "group_id": _str("Group ID"),
+            "message_id": _str("Message ID of the todo"),
+        },
+        required=["group_id", "message_id"],
+    ),
+    _qq_complete_group_todo,
+)
+
+
+async def _qq_get_group_signed_list(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_group_signed_list", group_id=int(args["group_id"]))
+        return tool_result(data if isinstance(data, list) else [data])
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_group_signed_list",
+    _schema(
+        "qq_get_group_signed_list", "Get the list of members who checked in (打卡) today in a group.",
+        {"group_id": _str("Group ID")},
+        required=["group_id"],
+    ),
+    _qq_get_group_signed_list,
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11. USER & SELF
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _qq_get_friends_with_category(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_friends_with_category")
+        return tool_result(data if isinstance(data, list) else [data])
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_friends_with_category",
+    _schema("qq_get_friends_with_category", "Get the friend list grouped by category (分组).", {}),
+    _qq_get_friends_with_category,
+)
+
+
+async def _qq_get_unidirectional_friend_list(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_unidirectional_friend_list")
+        return tool_result(data if isinstance(data, list) else [data])
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_unidirectional_friend_list",
+    _schema(
+        "qq_get_unidirectional_friend_list",
+        "Get the one-way friend list (people who have you but are not your friend).",
+        {},
+    ),
+    _qq_get_unidirectional_friend_list,
+)
+
+
+async def _qq_set_qq_avatar(args: dict, **_) -> str:
+    err = _check() or _require_admin()
+    if err:
+        return tool_error(err)
+    try:
+        await _call("set_qq_avatar", file=args["file"])
+        return tool_result(success=True)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_set_qq_avatar",
+    _schema(
+        "qq_set_qq_avatar", "Change the bot's QQ avatar. Requires admin.",
+        {"file": _str("Image path, URL or base64://")},
+        required=["file"],
+    ),
+    _qq_set_qq_avatar,
+)
+
+
+async def _qq_set_self_longnick(args: dict, **_) -> str:
+    err = _check() or _require_admin()
+    if err:
+        return tool_error(err)
+    try:
+        await _call("set_self_longnick", longNick=args["long_nick"])
+        return tool_result(success=True)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_set_self_longnick",
+    _schema(
+        "qq_set_self_longnick", "Set the bot's QQ personal signature (个性签名). Requires admin.",
+        {"long_nick": _str("New signature text")},
+        required=["long_nick"],
+    ),
+    _qq_set_self_longnick,
+)
+
+
+async def _qq_set_online_status(args: dict, **_) -> str:
+    err = _check() or _require_admin()
+    if err:
+        return tool_error(err)
+    try:
+        await _call(
+            "set_online_status",
+            status=int(args.get("status", 10)),
+            ext_status=int(args.get("ext_status", 0)),
+            battery_status=int(args.get("battery_status", 0)),
+        )
+        return tool_result(success=True)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_set_online_status",
+    _schema(
+        "qq_set_online_status", "Set the bot's online status (在线/离开/忙碌/etc.). Requires admin.",
+        {
+            "status": _int("Online status code (10=在线, 30=离开, 40=隐身, 50=忙碌, 60=Q我吧, 70=请勿打扰; default 10)"),
+            "ext_status": _int("Extended status code (0=none, e.g. 1028=听歌中, 1018=学习中; default 0)"),
+            "battery_status": _int("Battery status (default 0)"),
+        },
+    ),
+    _qq_set_online_status,
+)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 12. QZONE, ALBUMS & SYSTEM
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _qq_send_qzone_msg(args: dict, **_) -> str:
+    err = _check() or _require_admin()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call(
+            "send_qzone_msg",
+            content=args["content"],
+            images=args.get("images", []),
+            ugc_right=int(args.get("ugc_right", 1)),
+            target_uins=args.get("target_uins", []),
+        )
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_send_qzone_msg",
+    _schema(
+        "qq_send_qzone_msg", "Post a QQ Space (Qzone) 说说 with optional images. Requires admin.",
+        {
+            "content": _str("Post body text"),
+            "images": {
+                "type": "array",
+                "description": "Image paths/URLs (file://, http(s)://, base64://)",
+                "items": {"type": "string"},
+            },
+            "ugc_right": _int("Visibility: 1 all, 4 friends, 16 some friends, 64 self, 128 some friends excluded (default 1)"),
+            "target_uins": {
+                "type": "array",
+                "description": "QQ numbers when ugc_right is 16 or 128",
+                "items": {"type": "string"},
+            },
+        },
+        required=["content"],
+    ),
+    _qq_send_qzone_msg,
+)
+
+
+async def _qq_get_qun_album_list(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call(
+            "get_qun_album_list",
+            group_id=int(args["group_id"]),
+            attach_info=args.get("attach_info", ""),
+        )
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_qun_album_list",
+    _schema(
+        "qq_get_qun_album_list", "List the albums of a group.",
+        {
+            "group_id": _str("Group ID"),
+            "attach_info": _str("Pagination token from a previous result (optional)"),
+        },
+        required=["group_id"],
+    ),
+    _qq_get_qun_album_list,
+)
+
+
+async def _qq_upload_image_to_qun_album(args: dict, **_) -> str:
+    err = _check() or _require_admin()
+    if err:
+        return tool_error(err)
+    try:
+        await _call(
+            "upload_image_to_qun_album",
+            group_id=int(args["group_id"]),
+            album_id=args["album_id"],
+            album_name=args.get("album_name", ""),
+            file=args["file"],
+        )
+        return tool_result(success=True)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_upload_image_to_qun_album",
+    _schema(
+        "qq_upload_image_to_qun_album", "Upload an image into a group album. Requires admin.",
+        {
+            "group_id": _str("Group ID"),
+            "album_id": _str("Album ID (from qq_get_qun_album_list)"),
+            "album_name": _str("Album name (fallback)"),
+            "file": _str("Image path, URL or base64://"),
+        },
+        required=["group_id", "album_id", "file"],
+    ),
+    _qq_upload_image_to_qun_album,
+)
+
+
+async def _qq_get_version_info(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_version_info")
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_version_info",
+    _schema("qq_get_version_info", "Get NapCat version information.", {}),
+    _qq_get_version_info,
+)
+
+
+async def _qq_get_status(args: dict, **_) -> str:
+    err = _check()
+    if err:
+        return tool_error(err)
+    try:
+        data = await _call("get_status")
+        return tool_result(data)
+    except Exception as e:
+        return tool_error(str(e))
+
+
+_register(
+    "qq_get_status",
+    _schema("qq_get_status", "Get NapCat runtime status (online/good).", {}),
+    _qq_get_status,
 )

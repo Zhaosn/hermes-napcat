@@ -6,9 +6,10 @@ client in ``Universal`` mode, so inbound message events and outbound API
 actions share one full-duplex connection (responses are correlated by
 ``echo`` — see :mod:`.api`).
 
-Installed as a Hermes plugin to ``~/.hermes/plugins/napcat/`` — no core
-Hermes source files are patched.  ``register(ctx)`` hooks the adapter into
-the platform registry, registers the 48 ``qq_*`` tools, and registers the
+Placed (copied or symlinked) as a drop-in plugin at
+``~/.hermes/plugins/napcat/`` — no core Hermes source files are patched, and
+no pip package or CLI is involved.  ``register(ctx)`` hooks the adapter into
+the platform registry, registers the 74 ``qq_*`` tools, and registers the
 ``qq`` skill.
 
 Configuration (``~/.hermes/config.yaml`` → ``gateway.platforms.napcat``, or
@@ -40,7 +41,7 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import aiohttp
 import aiohttp.web
@@ -67,9 +68,6 @@ from . import qq_tool as _qq_tool
 logger = logging.getLogger(__name__)
 
 _QQ_TEXT_LIMIT = 4500
-_AUDIO_EXTS = {".mp3", ".opus", ".ogg", ".wav", ".flac", ".m4a", ".aac", ".silk", ".amr"}
-_VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
-_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".ico", ".svg"}
 
 
 # ── Markdown → QQ plain-text ──────────────────────────────────────────────────
@@ -162,23 +160,6 @@ def _inline(text: str) -> str:
     text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"[\1]", text)
     text = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", text)
     return text
-
-
-def _file_ext(url: str) -> str:
-    path = url.split("?")[0]
-    dot = path.rfind(".")
-    return path[dot:].lower() if dot != -1 else ""
-
-
-def _classify_media(url: str) -> str:
-    ext = _file_ext(url)
-    if ext in _AUDIO_EXTS:
-        return "audio"
-    if ext in _VIDEO_EXTS:
-        return "video"
-    if ext in _IMAGE_EXTS:
-        return "image"
-    return "file"
 
 
 def _extract_text(segments: list[dict]) -> str:
@@ -476,12 +457,14 @@ class NapCatAdapter(BasePlatformAdapter):
         return ws
 
     async def _process_message(self, data: dict) -> None:
-        if data.get("post_type") != "message":
-            return
+        post_type = data.get("post_type")
         try:
-            await self._handle_message_event(data)
+            if post_type == "message":
+                await self._handle_message_event(data)
+            elif post_type == "request":
+                await self._handle_request_event(data)
         except Exception:
-            logger.exception("NapCat: error processing message")
+            logger.exception("NapCat: error processing %s event", post_type)
 
     async def _handle_message_event(self, event: dict) -> None:
         is_group = event.get("message_type") == "group"
@@ -625,6 +608,78 @@ class NapCatAdapter(BasePlatformAdapter):
 
         # Set per-message context so admin-gated tools know who is asking
         _qq_tool._set_context(sender_id, is_admin=is_admin)
+
+        await self.handle_message(message_event)
+
+    async def _handle_request_event(self, event: dict) -> None:
+        """Surface OneBot 11 ``request`` events (friend/group requests) to the model.
+
+        These events carry the ``flag`` consumed by ``qq_handle_friend_request`` /
+        ``qq_handle_group_request``.  They are treated as admin-routed system
+        events, so ``dm_policy``/``group_policy`` do not apply — the model (acting
+        for the operator) decides whether to approve or reject via the tools.
+        """
+        request_type = event.get("request_type")
+        flag = str(event.get("flag", ""))
+        user_id = str(event.get("user_id", ""))
+        sub_type = event.get("sub_type", "")
+        comment = str(event.get("comment", "") or "")
+
+        if request_type == "friend":
+            chat_id = user_id
+            chat_type = "dm"
+            text = (
+                f"[好友申请] QQ:{user_id} 请求添加你为好友"
+                + (f"，附言：{comment}" if comment else "")
+                + f'。请调用 qq_handle_friend_request(flag="{flag}", approve=...) 处理。'
+            )
+        elif request_type == "group":
+            group_id = str(event.get("group_id", ""))
+            chat_id = f"group:{group_id}"
+            chat_type = "group"
+            if sub_type == "invite":
+                text = (
+                    f"[群邀请] 群 {group_id} 邀请机器人入群（来自 QQ:{user_id}"
+                    + (f"，附言：{comment}" if comment else "")
+                    + f'）。请调用 qq_handle_group_request(flag="{flag}", sub_type="invite", approve=...) 处理。'
+                )
+            else:
+                text = (
+                    f"[加群申请] QQ:{user_id} 申请加入群 {group_id}"
+                    + (f"，附言：{comment}" if comment else "")
+                    + f'。请调用 qq_handle_group_request(flag="{flag}", sub_type="add", approve=...) 处理。'
+                )
+        else:
+            return
+
+        permission_prompt = (
+            f"[系统事件-管理员] 这是一条系统级申请事件，已授予管理员权限。"
+            "如需处理，请调用 qq_handle_friend_request / qq_handle_group_request 工具。"
+        )
+
+        source = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_id,
+        )
+
+        message_event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=event,
+            message_id="",
+            media_urls=[],
+            media_types=[],
+            reply_to_message_id=None,
+            reply_to_text=None,
+            timestamp=datetime.fromtimestamp(event["time"]) if event.get("time") else datetime.now(),
+            channel_prompt=permission_prompt,
+        )
+
+        _qq_tool._set_context(user_id, is_admin=True)
 
         await self.handle_message(message_event)
 
@@ -809,9 +864,9 @@ def register(ctx) -> None:
         is_connected=is_connected,
         required_env=["NAPCAT_ACCESS_TOKEN"],
         install_hint=(
-            "hermes-napcat runs as a plugin — make sure aiohttp is installed "
-            "and set NAPCAT_ACCESS_TOKEN / ws_port to match your NapCat "
-            "reverse-WebSocket item."
+            "Place the plugin/ directory into ~/.hermes/plugins/napcat/, make "
+            "sure aiohttp is installed, and set NAPCAT_ACCESS_TOKEN / ws_port "
+            "to match your NapCat reverse-WebSocket item."
         ),
         emoji="🐧",
         max_message_length=_QQ_TEXT_LIMIT,

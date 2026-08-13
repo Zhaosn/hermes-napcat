@@ -9,16 +9,15 @@ description: >
   groups/DMs and the Hermes agent.  Ships 48 `qq_*` tools covering
   messaging, group management, files, OCR, translation, and more.
 author: shubyi
-requires_env:
+optional_env:
   - name: NAPCAT_ACCESS_TOKEN
-    description: "NapCat reverse-WS 鉴权 Token — must match the token configured on the NapCat reverse-WebSocket item"
+    description: "NapCat reverse-WS 鉴权 Token — must match the token configured on the NapCat reverse-WebSocket item (blank = no auth)"
     prompt: "NapCat access token"
     password: true
   - name: NAPCAT_WS_PORT
     description: "Reverse-WebSocket listen port NapCat dials into (default 18801)"
     prompt: "NapCat reverse WS port"
     password: false
-optional_env:
   - name: NAPCAT_WS_HOST
     description: "Reverse-WebSocket bind host (default 0.0.0.0)"
     prompt: "WS bind host"

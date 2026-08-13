@@ -12,10 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import logging
 from typing import Any, Optional
-
-logger = logging.getLogger(__name__)
 
 _echo_seq = itertools.count(1)
 
@@ -115,10 +112,6 @@ def text_segment(text: str) -> dict:
 
 def image_segment(file_url: str) -> dict:
     return {"type": "image", "data": {"file": file_url}}
-
-
-def at_segment(qq: int | str) -> dict:
-    return {"type": "at", "data": {"qq": str(qq)}}
 
 
 def reply_segment(message_id: int | str) -> dict:

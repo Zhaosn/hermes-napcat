@@ -125,6 +125,24 @@ To send plain text, wrap it: `[{"type": "text", "data": {"text": "your message"}
 | Download a URL via NapCat | `qq_download_file` |
 | OCR image | `qq_ocr_image` |
 | Translate EN→ZH | `qq_translate_en2zh` |
+| Resolve file/image/voice by id | `qq_get_file`, `qq_get_image`, `qq_get_record` |
+| Who reacted to a message | `qq_get_emoji_likes` |
+| Recent conversations | `qq_get_recent_contact` |
+| Send flash photo (闪照) | `qq_create_flash_task`, `qq_send_flash_msg` |
+| Batch kick members | `qq_kick_group_members` ★ |
+| List muted members | `qq_get_group_shut_list` |
+| Detailed group info | `qq_get_group_detail_info` |
+| Group files in folder | `qq_get_group_files_by_folder` |
+| Group file system usage | `qq_get_group_file_system_info` |
+| Delete group folder | `qq_delete_group_folder` ★ |
+| Group todo (待办) | `qq_set_group_todo` ★, `qq_complete_group_todo` |
+| Today's check-in list | `qq_get_group_signed_list` |
+| Friend list by category | `qq_get_friends_with_category` |
+| One-way friends | `qq_get_unidirectional_friend_list` |
+| Bot avatar / signature / status | `qq_set_qq_avatar` ★, `qq_set_self_longnick` ★, `qq_set_online_status` ★ |
+| Post QQ Space (说说) | `qq_send_qzone_msg` ★ |
+| Group albums | `qq_get_qun_album_list`, `qq_upload_image_to_qun_album` ★ |
+| NapCat version / status | `qq_get_version_info`, `qq_get_status` |
 
 ★ = requires admin (see Admin System section)
 
@@ -185,9 +203,9 @@ qq_send_group_forward_msg(
 **Group message history**
 ```
 qq_get_group_msg_history(group_id = "GROUP_ID", count = 20)
-qq_get_group_msg_history(group_id = "GROUP_ID", message_id = "MSG_ID", count = 20)
+qq_get_group_msg_history(group_id = "GROUP_ID", message_seq = "SEQ", count = 20)
 ```
-Use `message_id` to paginate backwards (fetch messages before that ID).
+Use `message_seq` to paginate backwards (fetch messages after that sequence number).
 
 **Friend message history**
 ```
@@ -215,10 +233,21 @@ qq_set_friend_remark(user_id = "QQ_NUMBER", remark = "Nick")
 qq_delete_friend(user_id = "QQ_NUMBER")           # admin required
 ```
 
-**Handle friend request** (from a `friend_request` event)
+**Handle friend request** (arrives as a `[好友申请]` system event; use the flag from that event)
 ```
 qq_handle_friend_request(flag = "FLAG_FROM_EVENT", approve = true, remark = "")
 ```
+
+**Handle group request / invite** (arrives as `[加群申请]` / `[群邀请]` system events)
+```
+qq_handle_group_request(flag = "FLAG_FROM_EVENT", sub_type = "add", approve = true, reason = "")
+qq_handle_group_request(flag = "FLAG_FROM_EVENT", sub_type = "invite", approve = true, reason = "")
+```
+
+> The adapter surfaces OneBot 11 `request` events (friend requests, group join
+> requests, group invites) to the model automatically as admin-context system
+> events. When you receive one, decide whether to approve/reject and call the
+> matching handler with the `flag` shown in the event text.
 
 ---
 
@@ -336,9 +365,9 @@ qq_ocr_image(image = "https://example.com/img.png")
 # Returns: {"texts": [...], "language": "zh"}
 ```
 
-**Translate English to Chinese**
+**Translate English to Chinese** (word list only, not full sentences)
 ```
-qq_translate_en2zh(content = "Hello world")
+qq_translate_en2zh(words = ["hello", "world"])
 ```
 
 **Group check-in (打卡)**
