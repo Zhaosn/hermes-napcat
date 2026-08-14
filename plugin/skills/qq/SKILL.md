@@ -41,7 +41,7 @@ platforms:
 
 If `admins` is empty, **all users** can call any tool (open mode). When admins are set, non-admin callers receive: `Permission denied: only admins can use this command`.
 
-**Admin-required tools:** `qq_mute_group_member`, `qq_kick_group_member`, `qq_set_group_admin`, `qq_set_group_name`, `qq_set_group_whole_ban`, `qq_leave_group`, `qq_set_group_portrait`, `qq_set_group_special_title`, `qq_set_essence_msg`, `qq_delete_essence_msg`, `qq_send_group_notice`, `qq_delete_group_notice`, `qq_delete_group_file`, `qq_delete_friend`, `qq_handle_friend_request`, `qq_handle_group_request`
+**Admin-required tools:** `qq_mute_group_member`, `qq_kick_group_member`, `qq_kick_group_members`, `qq_set_group_admin`, `qq_set_group_name`, `qq_set_group_whole_ban`, `qq_leave_group`, `qq_set_group_portrait`, `qq_set_group_special_title`, `qq_set_essence_msg`, `qq_delete_essence_msg`, `qq_send_group_notice`, `qq_delete_group_notice`, `qq_delete_group_file`, `qq_delete_group_folder`, `qq_set_group_todo`, `qq_delete_friend`, `qq_handle_friend_request`, `qq_handle_group_request`, `qq_send_qzone_msg`, `qq_set_qq_avatar`, `qq_set_self_longnick`, `qq_set_online_status`, `qq_upload_image_to_qun_album`
 
 ---
 
@@ -173,6 +173,17 @@ qq_set_msg_emoji_like(message_id = "MESSAGE_ID", emoji_id = "76")
 ```
 Common emoji IDs: 76 = 赞(thumbs up), 66 = 爱心, 277 = 烟花, 212 = 强, 4 = 撇嘴
 
+**Mark a message as read**
+```
+qq_mark_msg_as_read(message_id = "MESSAGE_ID")
+```
+
+**Who reacted to a message**
+```
+qq_get_emoji_likes(message_id = "MESSAGE_ID", emoji_id = "76")
+qq_get_emoji_likes(message_id = "MESSAGE_ID", emoji_id = "76", group_id = "G", count = 0)   # count 0 = all
+```
+
 **Forward a single message**
 ```
 qq_forward_message(message_id = "MESSAGE_ID", group_id = "GROUP_ID")
@@ -210,6 +221,7 @@ Use `message_seq` to paginate backwards (fetch messages after that sequence numb
 **Friend message history**
 ```
 qq_get_friend_msg_history(user_id = "QQ_NUMBER", count = 20)
+qq_get_friend_msg_history(user_id = "QQ_NUMBER", message_seq = "SEQ", count = 20)
 ```
 
 **Essence messages (精华消息)**
@@ -226,6 +238,9 @@ qq_delete_essence_msg(message_id = "MESSAGE_ID")   # admin required
 ```
 qq_get_user_info(user_id = "QQ_NUMBER")          # nickname, avatar, etc.
 qq_get_friend_list()                              # bot's friend list
+qq_get_friends_with_category()                    # friend list grouped by category (分组)
+qq_get_unidirectional_friend_list()               # one-way friends (they added you, you didn't)
+qq_get_recent_contact(count = 10)                 # most recent conversations
 qq_like_user(user_id = "QQ_NUMBER", times = 1)   # max 10 likes/day per user
 qq_poke(user_id = "QQ_NUMBER")                   # private poke
 qq_poke(user_id = "QQ_NUMBER", group_id = "G")   # group poke
@@ -260,6 +275,9 @@ qq_get_group_member_info(group_id = "GROUP_ID", user_id = "QQ_NUMBER")
 qq_get_group_member_list(group_id = "GROUP_ID")
 qq_get_group_honor_info(group_id = "GROUP_ID", type = "all")
 qq_get_group_at_all_remain(group_id = "GROUP_ID")
+qq_get_group_detail_info(group_id = "GROUP_ID")          # member count, whole-ban state, remark
+qq_get_group_shut_list(group_id = "GROUP_ID")            # currently muted members
+qq_get_group_signed_list(group_id = "GROUP_ID")          # today's check-in (打卡) list
 ```
 
 `type` for honor info: `talkative` (龙王) | `performer` | `legend` | `strong_newbie` | `emotion` | `all`
@@ -278,6 +296,7 @@ Duration is seconds. Common durations: 600 (10 min), 3600 (1h), 86400 (1 day), 2
 **Kick**
 ```
 qq_kick_group_member(group_id = "G", user_id = "U", reject_add_request = false)
+qq_kick_group_members(group_id = "G", user_id = ["U1", "U2"], reject_add_request = false)   # batch kick
 ```
 
 **Admin role**
@@ -346,12 +365,33 @@ qq_get_group_root_files(group_id = "G")                            # list root
 qq_get_group_file_url(group_id = "G", file_id = "FILE_ID")         # get download URL
 qq_create_group_file_folder(group_id = "G", name = "Docs")
 qq_delete_group_file(group_id = "G", file_id = "FILE_ID")          # admin ★
+qq_get_group_files_by_folder(group_id = "G", folder_id = "/")      # files in a folder
+qq_get_group_file_system_info(group_id = "G")                        # space used / limit
+qq_delete_group_folder(group_id = "G", folder_id = "FOLDER_ID")     # admin ★
 ```
 
 **Download any URL through NapCat** (useful when direct download is unavailable)
 ```
 qq_download_file(url = "https://example.com/file.pdf")
 # Returns: {"file": "/local/path/to/downloaded/file"}
+```
+
+---
+
+### Media & Content
+
+**Resolve a file/image/voice by id** (received messages carry media as ids)
+```
+qq_get_file(file = "FILE_ID")                          # file id, local path or URL
+qq_get_image(file = "IMG_ID")                          # image id, local path or URL
+qq_get_record(file = "RECORD_ID", out_format = "mp3") # voice; ffmpeg converts silk→mp3/wav
+```
+
+**Send a flash photo (闪照)**
+```
+qq_create_flash_task(files = ["/path/to/img.jpg"], name = "")   # → fileset_id
+qq_send_flash_msg(fileset_id = "FILESET_ID", group_id = "G")    # to a group
+qq_send_flash_msg(fileset_id = "FILESET_ID", user_id = "QQ")    # or to a private chat
 ```
 
 ---
@@ -378,6 +418,45 @@ qq_set_group_sign(group_id = "G")
 **Set group remark (personal note, not visible to others)**
 ```
 qq_set_group_remark(group_id = "G", remark = "Work group")
+```
+
+---
+
+### Group Todo (待办)
+
+```
+qq_set_group_todo(group_id = "G", message_id = "MSG_ID")         # admin ★, pin a message as a todo
+qq_complete_group_todo(group_id = "G", message_id = "MSG_ID")    # mark a todo done
+```
+
+---
+
+### Bot Profile, Qzone, Albums & System
+
+**Bot profile** (admin ★)
+```
+qq_set_qq_avatar(file = "/path/to/avatar.jpg")        # change QQ avatar (path, URL or base64://)
+qq_set_self_longnick(long_nick = "New signature")     # personal signature (个性签名)
+qq_set_online_status(status = 10, ext_status = 0, battery_status = 0)
+# status: 10=在线, 30=离开, 40=隐身, 50=忙碌, 60=Q我吧, 70=请勿打扰; ext_status e.g. 1028=听歌中
+```
+
+**Post QQ Space (说说)**
+```
+qq_send_qzone_msg(content = "Post text", images = ["/path/img.jpg"], ugc_right = 1)
+# ugc_right: 1 all | 4 friends | 16 some friends | 64 self | 128 exclude some friends
+```
+
+**Group albums (相册)**
+```
+qq_get_qun_album_list(group_id = "G")                                                # list albums
+qq_upload_image_to_qun_album(group_id = "G", album_id = "ALBUM_ID", file = "/path/img.jpg")   # admin ★
+```
+
+**NapCat version / status**
+```
+qq_get_version_info()      # NapCat version
+qq_get_status()            # runtime / connection status
 ```
 
 ---

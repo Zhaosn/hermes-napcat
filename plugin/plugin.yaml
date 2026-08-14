@@ -1,12 +1,12 @@
 name: napcat
-label: 🐧 NapCat (QQ)
+label: NapCat (QQ)
 kind: platform
 version: 0.3.0
 description: >
   NapCat / OneBot 11 (QQ) gateway adapter for Hermes Agent.  Runs a
   reverse-WebSocket server that NapCat dials into (Universal role: API +
   events over one full-duplex connection) and relays messages between QQ
-  groups/DMs and the Hermes agent.  Ships 48 `qq_*` tools covering
+  groups/DMs and the Hermes agent.  Ships 74 `qq_*` tools covering
   messaging, group management, files, OCR, translation, and more.
 author: shubyi
 optional_env:

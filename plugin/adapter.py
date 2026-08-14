@@ -501,15 +501,9 @@ class NapCatAdapter(BasePlatformAdapter):
         image_urls = _extract_images(segments)
         record_url = _extract_record(segments)
 
-        # In group chats prefix every message with the sender's name so the
-        # AI can tell participants apart when the group shares one session.
-        # Skip the prefix for slash commands so the gateway can detect them
-        # correctly — is_command() checks text.startswith("/").
-        if is_group and text:
-            if text.lstrip().startswith("/"):
-                text = text.lstrip()  # preserve slash command, sender is in channel_prompt
-            else:
-                text = f"[{sender_name}]: {text}"
+        # Sender identity is passed separately (source.user_id/user_name and
+        # the channel_prompt below), not embedded in the message text — so it
+        # is never duplicated when the message is rendered in a group session.
 
         # Fetch quoted message text for reply context
         reply_id = _extract_reply_id(segments)
@@ -564,9 +558,10 @@ class NapCatAdapter(BasePlatformAdapter):
             return
 
         is_admin = sender_id in self._admins
+        name_tag = f"（{sender_name}）" if sender_name != sender_id else ""
         if is_admin:
             permission_prompt = (
-                f"[管理员] QQ:{sender_id}。"
+                f"[管理员] QQ:{sender_id}{name_tag}。"
                 "你现在运行在本机 Hermes 环境，拥有完整本地工具访问权限。"
                 "可直接调用：terminal（执行 shell 命令）、read_file（读取本机文件）、"
                 "write_file、web_search、browser、vision_analyze 等所有工具。"
@@ -575,7 +570,7 @@ class NapCatAdapter(BasePlatformAdapter):
             )
         else:
             permission_prompt = (
-                f"[普通用户] QQ:{sender_id}。"
+                f"[普通用户] QQ:{sender_id}{name_tag}。"
                 "你现在运行在本机 Hermes 环境，可直接调用：web_search（搜索）、"
                 "read_file（只读访问本机文件）、terminal（只读/非破坏性命令）、"
                 "vision_analyze、skills_list 等工具。"
