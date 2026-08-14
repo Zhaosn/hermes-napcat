@@ -330,13 +330,9 @@ Windows 本机，而插件在 WSL 里监听的是 WSL 虚拟机内部的 `0.0.0.
 3. **先起网关再开 NapCat**——NapCat 每 5 秒自动重连，网关没起时会一直刷 `ECONNREFUSED`，
    属正常重试，不是配置错误。
 
-### 特定 API 提供商说明
+### AI生成内容说明
 
-部分 LLM API 提供商会拦截 OpenAI SDK 默认的 `AsyncOpenAI/Python X.X.X` User-Agent。
-若遇到 `403 unsupported_user_agent`，请在 `~/.hermes/hermes-agent/run_agent.py`
-中为你的提供商加请求头覆盖（参见 Hermes 文档）——这与 NapCat 插件无关。
-
----
+使用 Claude Code 通过 CC Switch 路由到 OpenCode，使用 DeepSeek-v4-flash-0731 模型，代码暂未人工审计。
 
 ## 许可证
 
