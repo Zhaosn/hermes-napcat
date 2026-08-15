@@ -87,13 +87,16 @@ hermes plugins enable napcat
 ### 2. 配置
 
 插件从 `~/.hermes/config.yaml` 的 `platforms.napcat` 块（见[配置说明](#配置说明)）
-或下述 `NAPCAT_*` 环境变量读取设置。至少先设置机器人管理员 QQ：
+或下述 `NAPCAT_*` 环境变量读取设置。**`NAPCAT_WS_PORT` 与 `NAPCAT_ACCESS_TOKEN`
+为必填**（两者缺一，适配器都不会启动），至少还需设置机器人管理员 QQ：
 
 ```yaml
 platforms:
   napcat:
     enabled: true
     extra:
+      ws_port: 18801            # 反向 WS 监听端口（必填，须与 NapCat 拨入地址一致）
+      access_token: "..."       # 反向 WS 鉴权 Token（必填，须与 NapCat 配置一致）
       admins: ["123456789"]     # 可使用管理类 qq_* 工具的 QQ 号
 ```
 
@@ -111,7 +114,7 @@ platforms:
 | 服务端 WebSocket URL | `ws://127.0.0.1:18801/onebot/v11` |
 | 连接角色 | Universal（全双工，API + 事件） |
 | 消息上报格式 | Array（结构化数组） |
-| 鉴权 Token | 与 config / `NAPCAT_ACCESS_TOKEN` 一致（可不填） |
+| 鉴权 Token | 与 config / `NAPCAT_ACCESS_TOKEN` 一致（**必填**） |
 
 ### 4. 启动 Hermes 网关
 
@@ -146,9 +149,10 @@ platforms:
   napcat:
     enabled: true
     extra:
-      ws_port: 18801                # 反向 WS 监听端口
+      ws_port: 18801                # 反向 WS 监听端口（必填，须与 NapCat 拨入地址一致）
       ws_path: "/onebot/v11"        # 反向 WS 路径（须与 NapCat 的 URL 一致）
-      access_token: ""              # NapCat 反向 WS 鉴权 Token
+      access_token: "..."           # 反向 WS 鉴权 Token（必填，须与 NapCat 配置一致）
+      http_url: ""                  # NapCat OneBot HTTP API 地址，如 http://127.0.0.1:3000（可选，仅用于独立进程的 cron 投递）
       self_id: "123456789"          # 机器人 QQ 号（留空则连接后自动探测）
       dm_policy: "allowlist"        # open | allowlist | disabled
       allow_from: []                # 允许私聊的 QQ 号
@@ -168,11 +172,17 @@ group_sessions_per_user: false      # 整个群共享一个会话
 等价的环境变量（通过插件的 `env_enablement_fn` 自动注入）：
 
 ```
-NAPCAT_ACCESS_TOKEN  NAPCAT_WS_PORT  NAPCAT_WS_HOST  NAPCAT_WS_PATH
-NAPCAT_SELF_ID       NAPCAT_DM_POLICY  NAPCAT_GROUP_POLICY
+NAPCAT_ACCESS_TOKEN（必填）  NAPCAT_WS_PORT（必填）  NAPCAT_WS_HOST  NAPCAT_WS_PATH
+NAPCAT_HTTP_URL（可选，独立进程 cron 投递用）  NAPCAT_SELF_ID
+NAPCAT_DM_POLICY  NAPCAT_GROUP_POLICY
 NAPCAT_ALLOWED_USERS（逗号分隔）  NAPCAT_ADMINS（逗号分隔）
 NAPCAT_ALLOW_ALL_USERS  NAPCAT_HOME_CHANNEL
 ```
+
+> **独立进程的 cron 投递（可选）：** 若你用 `hermes cron run`（与 `hermes gateway`
+> 分离的进程）执行 `deliver=napcat` 的任务，需在 NapCat 开启 HTTP 服务并把地址填进
+> `http_url` / `NAPCAT_HTTP_URL`——否则该场景会报 "No live adapter for platform
+> 'napcat'"。网关进程内的投递无需此项。
 
 > **网关级鉴权：** 插件声明了 `allowed_users_env` / `allow_all_env`，核心的
 > `_is_user_authorized()` 开箱即用。除非你显式设置 `NAPCAT_ALLOWED_USERS` 或
@@ -329,10 +339,6 @@ Windows 本机，而插件在 WSL 里监听的是 WSL 虚拟机内部的 `0.0.0.
 
 3. **先起网关再开 NapCat**——NapCat 每 5 秒自动重连，网关没起时会一直刷 `ECONNREFUSED`，
    属正常重试，不是配置错误。
-
-### AI生成内容说明
-
-使用 Claude Code 通过 CC Switch 路由到 OpenCode，使用 DeepSeek-v4-flash-0731 模型，代码暂未人工审计。
 
 ## 许可证
 
