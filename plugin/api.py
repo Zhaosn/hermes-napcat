@@ -1,15 +1,3 @@
-"""OneBot 11 Universal-WebSocket action client.
-
-The NapCat adapter runs a reverse-WebSocket **server**; NapCat dials in as the
-client in ``Universal`` mode (API + events over one full-duplex connection).
-Outbound API actions are sent as ``{"action", "params", "echo"}`` JSON frames
-over that same socket and correlated with responses by ``echo``.
-
-Unlike the old HTTP-API design, nothing here depends on NapCat exposing an HTTP
-endpoint — the reverse-WS connection carries both directions.
-"""
-from __future__ import annotations
-
 import asyncio
 import itertools
 from typing import Any, Optional
@@ -38,10 +26,18 @@ class OneBot11Client:
         self._ws = ws
         # Fail in-flight requests from the previous connection so callers don't
         # hang on a stale echo.
+        self._fail_pending("NapCat WebSocket reconnected")
+
+    def shutdown(self) -> None:
+        """Fail any in-flight requests; the transport is going away for good."""
+        self._ws = None
+        self._fail_pending("NapCat WebSocket disconnected")
+
+    def _fail_pending(self, msg: str) -> None:
         pending, self._pending = self._pending, {}
         for fut in pending.values():
             if not fut.done():
-                fut.set_exception(RuntimeError("NapCat WebSocket reconnected"))
+                fut.set_exception(RuntimeError(msg))
 
     def detach(self, ws: Any) -> None:
         if self._ws is ws:

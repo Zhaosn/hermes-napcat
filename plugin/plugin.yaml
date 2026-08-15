@@ -9,15 +9,16 @@ description: >
   groups/DMs and the Hermes agent.  Ships 74 `qq_*` tools covering
   messaging, group management, files, OCR, translation, and more.
 author: shubyi
-optional_env:
+requires_env:
   - name: NAPCAT_ACCESS_TOKEN
-    description: "NapCat reverse-WS 鉴权 Token — must match the token configured on the NapCat reverse-WebSocket item (blank = no auth)"
+    description: "NapCat reverse-WS Token — must match the token configured on the NapCat reverse-WebSocket item"
     prompt: "NapCat access token"
     password: true
   - name: NAPCAT_WS_PORT
-    description: "Reverse-WebSocket listen port NapCat dials into (default 18801)"
+    description: "Reverse-WebSocket listen port NapCat dials into"
     prompt: "NapCat reverse WS port"
     password: false
+optional_env:
   - name: NAPCAT_WS_HOST
     description: "Reverse-WebSocket bind host (default 0.0.0.0)"
     prompt: "WS bind host"
@@ -25,6 +26,10 @@ optional_env:
   - name: NAPCAT_WS_PATH
     description: "Reverse-WebSocket path (default /onebot/v11)"
     prompt: "WS path"
+    password: false
+  - name: NAPCAT_HTTP_URL
+    description: "Base URL of NapCat's OneBot HTTP API (e.g. http://127.0.0.1:3000) — enables standalone / cron delivery without the gateway process"
+    prompt: "NapCat HTTP API base URL (optional)"
     password: false
   - name: NAPCAT_SELF_ID
     description: "Bot's own QQ number (auto-detected via get_login_info when empty)"
