@@ -75,6 +75,9 @@ class NapCatAdapter(InboundHandlerMixin, BasePlatformAdapter):
         self._access_token: str = "" if raw_token in ("YOUR_NAPCAT_TOKEN", "YOURQQ_NUMBER") else raw_token
         raw_self_id = str(extra.get("self_id") or "")
         self._self_id: str = "" if raw_self_id in ("YOUR_QQ_NUMBER", "YOURQQ_NUMBER") else raw_self_id
+        # Bot display name (from get_login_info); used to recognize
+        # copy-pasted plain-text mentions like "@Atri" in groups.
+        self._bot_name: str = ""
         self._dm_policy: str = str(extra.get("dm_policy", "allowlist")).lower()
         self._allow_from: list[str] = [str(x) for x in extra.get("allow_from", [])]
         self._group_policy: str = str(extra.get("group_policy", "open")).lower()
@@ -164,6 +167,8 @@ class NapCatAdapter(InboundHandlerMixin, BasePlatformAdapter):
             info = await self._client.call("get_login_info")
             if not self._self_id:
                 self._self_id = str(info.get("user_id", ""))
+            if not self._bot_name:
+                self._bot_name = str(info.get("nickname", "") or "")
             logger.info(
                 "NapCat: bot is %s (QQ:%s)",
                 info.get("nickname", "?"), info.get("user_id", "?"),
@@ -183,6 +188,12 @@ class NapCatAdapter(InboundHandlerMixin, BasePlatformAdapter):
         self._active_ws.add(ws)
         self._client.attach(ws)
         logger.info("NapCat WS connected from %s", request.remote)
+        # If the startup self_id probe ran before NapCat dialed in, self_id
+        # is still empty and every group message is silently dropped
+        # (fail-closed in _handle_message_event).  Re-probe now that a
+        # connection actually exists.
+        if not self._self_id and (self._self_id_task is None or self._self_id_task.done()):
+            self._self_id_task = asyncio.create_task(self._fill_self_id())
         try:
             async for msg in ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:

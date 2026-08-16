@@ -42,3 +42,8 @@ Thumbs.db
 # Secrets
 .env
 *.env.*
+
+# Vendored reference source / local docs (not shipped with the plugin)
+hermes-agent-2026.8.13/
+docs/
+配置参考.txt

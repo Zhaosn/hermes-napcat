@@ -138,9 +138,9 @@ class InboundHandlerMixin:
         if is_group:
             if not self._self_id:
                 return
-            if not has_bot_mention(segments, self._self_id):
+            if not has_bot_mention(segments, self._self_id, getattr(self, "_bot_name", "")):
                 return
-            segments = strip_bot_mention(segments, self._self_id)
+            segments = strip_bot_mention(segments, self._self_id, getattr(self, "_bot_name", ""))
 
         # Policy checks
         if is_group:

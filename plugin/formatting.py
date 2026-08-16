@@ -172,15 +172,47 @@ def extract_reply_id(segments: list[dict]) -> int | None:
     return None
 
 
-def has_bot_mention(segments: list[dict], self_id: str) -> bool:
+def _mention_pattern(self_id: str, bot_name: str = "") -> re.Pattern:
+    """Compile the regex matching a plain-text ``@Name`` mention.
+
+    The name must be followed by a word boundary — a space, punctuation,
+    or end of text — enforced by ``(?!\\w)``.  Without it a short
+    bot_name like ``A`` would match the ``@A`` inside ``@Apple``.
+    """
+    names = [self_id] + ([bot_name] if bot_name else [])
+    return re.compile(r"@\s*(?:" + "|".join(re.escape(n) for n in names) + r")(?!\w)")
+
+
+def has_bot_mention(segments: list[dict], self_id: str, bot_name: str = "") -> bool:
+    """True if the message mentions the bot.
+
+    Matches either a native OneBot ``at`` segment (real QQ @) or a
+    copy-pasted plain-text mention like ``@Atri`` / ``@2795487017``
+    (QQ does not emit an ``at`` segment when the text was pasted).
+    """
+    for s in segments:
+        if s["type"] == "at" and str(s["data"].get("qq")) == self_id:
+            return True
+    pattern = _mention_pattern(self_id, bot_name)
     return any(
-        s["type"] == "at" and str(s["data"].get("qq")) == self_id
+        s["type"] == "text" and pattern.search(s["data"].get("text", ""))
         for s in segments
     )
 
 
-def strip_bot_mention(segments: list[dict], self_id: str) -> list[dict]:
-    return [
-        s for s in segments
-        if not (s["type"] == "at" and str(s["data"].get("qq")) == self_id)
-    ]
+def strip_bot_mention(segments: list[dict], self_id: str, bot_name: str = "") -> list[dict]:
+    """Remove bot mentions from segments: native ``at`` segments and
+    copy-pasted plain-text mentions (``@Atri`` / ``@2795487017``)."""
+    pattern = _mention_pattern(self_id, bot_name)
+    out: list[dict] = []
+    for s in segments:
+        if s["type"] == "at" and str(s["data"].get("qq")) == self_id:
+            continue
+        if s["type"] == "text":
+            text = pattern.sub("", s["data"].get("text", ""))
+            text = re.sub(r"^\s+", "", text).rstrip()
+            if not text:
+                continue  # mention-only segment: drop it, don't leak "@Atri"
+            s = {"type": "text", "data": {"text": text}}
+        out.append(s)
+    return out
