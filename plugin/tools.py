@@ -67,13 +67,21 @@ async def _qq_send_message(args: dict, **_) -> str:
     if err:
         return tool_error(err)
     try:
-        data = await _call(
-            "send_msg",
-            message_type=args.get("message_type"),
-            group_id=args.get("group_id"),
-            user_id=args.get("user_id"),
-            message=args["message"],
-        )
+        message_type = args.get("message_type")
+        if message_type == "group":
+            data = await _call(
+                "send_group_msg",
+                group_id=int(args["group_id"]),
+                message=args["message"],
+            )
+        elif message_type == "private":
+            data = await _call(
+                "send_private_msg",
+                user_id=int(args["user_id"]),
+                message=args["message"],
+            )
+        else:
+            return tool_error(f"Invalid message_type: {message_type!r}. Must be 'group' or 'private'.")
         return tool_result(data)
     except Exception as e:
         return tool_error(str(e))
@@ -283,23 +291,6 @@ async def _qq_get_friend_list(args: dict, **_) -> str:
         return tool_error(str(e))
 
 HANDLERS["qq_get_friend_list"] = _qq_get_friend_list
-
-
-async def _qq_like_user(args: dict, **_) -> str:
-    err = _check()
-    if err:
-        return tool_error(err)
-    try:
-        await _call(
-            "send_like",
-            user_id=int(args["user_id"]),
-            times=int(args.get("times", 1)),
-        )
-        return tool_result(success=True)
-    except Exception as e:
-        return tool_error(str(e))
-
-HANDLERS["qq_like_user"] = _qq_like_user
 
 
 async def _qq_set_friend_remark(args: dict, **_) -> str:
@@ -1195,10 +1186,10 @@ async def _qq_set_online_status(args: dict, **_) -> str:
         return tool_error(err)
     try:
         await _call(
-            "set_online_status",
-            status=int(args.get("status", 10)),
-            ext_status=int(args.get("ext_status", 0)),
-            battery_status=int(args.get("battery_status", 0)),
+            "set_diy_online_status",
+            face_id=str(args.get("face_id", "")),
+            face_type=str(args.get("face_type", "1")),
+            wording=str(args.get("wording", " ")),
         )
         return tool_result(success=True)
     except Exception as e:

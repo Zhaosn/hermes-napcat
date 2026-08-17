@@ -164,15 +164,6 @@ SCHEMAS["qq_get_user_info"] = _schema(
 
 SCHEMAS["qq_get_friend_list"] = _schema("qq_get_friend_list", "Get the bot's friend list.", {})
 
-SCHEMAS["qq_like_user"] = _schema(
-    "qq_like_user", "Send a profile like to a QQ user.",
-    {
-        "user_id": _str("QQ number to like"),
-        "times": _int("Number of likes to send (default 1, max 10 per day)"),
-    },
-    required=["user_id"],
-)
-
 SCHEMAS["qq_set_friend_remark"] = _schema(
     "qq_set_friend_remark", "Set or clear the remark (alias) for a friend.",
     {
@@ -651,12 +642,13 @@ SCHEMAS["qq_set_self_longnick"] = _schema(
 )
 
 SCHEMAS["qq_set_online_status"] = _schema(
-    "qq_set_online_status", "Set the bot's online status (在线/离开/忙碌/etc.). Requires admin.",
+    "qq_set_online_status", "Set the bot's custom online status. Requires admin.",
     {
-        "status": _int("Online status code (10=在线, 30=离开, 40=隐身, 50=忙碌, 60=Q我吧, 70=请勿打扰; default 10)"),
-        "ext_status": _int("Extended status code (0=none, e.g. 1028=听歌中, 1018=学习中; default 0)"),
-        "battery_status": _int("Battery status (default 0)"),
+        "face_id": _str("Icon ID (face_id from set_diy_online_status API)"),
+        "face_type": _str("Icon type (default '1')"),
+        "wording": _str("Status text (default single space)"),
     },
+    required=["face_id", "face_type", "wording"],
 )
 
 # ══════════════════════════════════════════════════════════════════════════════

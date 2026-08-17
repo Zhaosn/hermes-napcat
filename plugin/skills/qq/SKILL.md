@@ -1,7 +1,7 @@
 ---
 name: qq-napcat
-description: Interact with QQ via the NapCat / OneBot 11 adapter. Use for sending messages, group management, file transfers, member info, notices, reactions, OCR, and translation.
-version: 1.0.0
+description: Interact with QQ via NapCat / OneBot 11 — send messages, manage groups, handle files, look up members, react to messages, and more. Use this skill whenever the user mentions QQ, group chat management, NapCat, OneBot, or wants to interact with a Chinese messaging platform. Even if they don't explicitly say "QQ tool", if the task involves sending messages to QQ groups, muting/kicking members, reading chat history, uploading files to a group, or managing a QQ bot — use this skill. Also trigger when the user pastes a QQ group number or QQ user ID and asks to send a message, fetch chat history, or look up member info — even if they don't mention "NapCat" or "OneBot" by name.
+version: 1.1.0
 author: hermes-napcat
 license: MIT
 platforms: [linux]
@@ -15,10 +15,15 @@ metadata:
 
 # QQ (NapCat / OneBot 11)
 
-NapCat is a headless QQ client that exposes the OneBot 11 API. Hermes connects to it via a reverse WebSocket: the Hermes adapter runs a WS server (default `ws://0.0.0.0:18801/onebot/v11`) and NapCat dials in as the client in Universal mode (API + events over one full-duplex connection). All tools in this skill are prefixed `qq_`.
+NapCat is a headless QQ client that exposes the OneBot 11 API. Hermes connects via reverse WebSocket — the adapter runs a WS server (default `ws://0.0.0.0:18801/onebot/v11`) and NapCat dials in as the client in Universal mode (API + events over one full-duplex connection).
 
-Use this skill for:
-- Sending text, images, files, reactions, and merged-forward messages to groups or private chats
+All tools in this skill are prefixed `qq_`.
+
+---
+
+## When to Use This Skill
+
+- Sending text, images, files, reactions, or merged-forward messages to groups or private chats
 - Reading message history and essence (精华) message lists
 - Group management: mute, kick, set admin, rename, set avatar, publish notices
 - Member and friend info lookups
@@ -41,6 +46,8 @@ platforms:
 
 If `admins` is empty, **all users** can call any tool (open mode). When admins are set, non-admin callers receive: `Permission denied: only admins can use this command`.
 
+Admins can also be set via the `NAPCAT_ADMINS` environment variable (comma-separated QQ numbers) when deploying as a Hermes plugin — this is the more common path for containerized setups. The `config.yaml` path applies to manual / non-plugin installations.
+
 **Admin-required tools:** `qq_mute_group_member`, `qq_kick_group_member`, `qq_kick_group_members`, `qq_set_group_admin`, `qq_set_group_name`, `qq_set_group_whole_ban`, `qq_leave_group`, `qq_set_group_portrait`, `qq_set_group_special_title`, `qq_set_essence_msg`, `qq_delete_essence_msg`, `qq_send_group_notice`, `qq_delete_group_notice`, `qq_delete_group_file`, `qq_delete_group_folder`, `qq_set_group_todo`, `qq_delete_friend`, `qq_handle_friend_request`, `qq_handle_group_request`, `qq_send_qzone_msg`, `qq_set_qq_avatar`, `qq_set_self_longnick`, `qq_set_online_status`, `qq_upload_image_to_qun_album`
 
 ---
@@ -51,20 +58,12 @@ The `message` parameter is always an **array of segment objects**. Common types:
 
 ```json
 [{"type": "text", "data": {"text": "Hello!"}}]
-
 [{"type": "image", "data": {"file": "/path/to/image.jpg"}}]
 [{"type": "image", "data": {"file": "https://example.com/img.png"}}]
-
-[{"type": "at", "data": {"qq": "123456789"}},
- {"type": "text", "data": {"text": " please check this"}}]
-
-[{"type": "reply", "data": {"id": "MESSAGE_ID"}},
- {"type": "text", "data": {"text": "Replying to you"}}]
-
+[{"type": "at", "data": {"qq": "123456789"}}, {"type": "text", "data": {"text": " check this"}}]
+[{"type": "reply", "data": {"id": "MESSAGE_ID"}}, {"type": "text", "data": {"text": "Replying to you"}}]
 [{"type": "face", "data": {"id": "76"}}]
-
 [{"type": "record", "data": {"file": "/path/to/audio.silk"}}]
-
 [{"type": "video", "data": {"file": "/path/to/video.mp4"}}]
 ```
 
@@ -86,24 +85,18 @@ To send plain text, wrap it: `[{"type": "text", "data": {"text": "your message"}
 | Send merged-forward to user | `qq_send_private_forward_msg` |
 | Group message history | `qq_get_group_msg_history` |
 | Friend message history | `qq_get_friend_msg_history` |
-| Get essence messages | `qq_get_essence_msg_list` |
-| Set essence message | `qq_set_essence_msg` ★ |
-| Remove essence message | `qq_delete_essence_msg` ★ |
+| Get/set/delete essence messages | `qq_get_essence_msg_list`, `qq_set_essence_msg` ★, `qq_delete_essence_msg` ★ |
 | Get user info | `qq_get_user_info` |
 | Get friend list | `qq_get_friend_list` |
-| Like a user's profile | `qq_like_user` |
 | Poke a user | `qq_poke` |
 | Set friend remark | `qq_set_friend_remark` |
 | Delete friend | `qq_delete_friend` ★ |
 | Accept/reject friend request | `qq_handle_friend_request` ★ |
-| Get group info | `qq_get_group_info` |
-| Get all groups | `qq_get_group_list` |
-| Get member info | `qq_get_group_member_info` |
-| Get all members | `qq_get_group_member_list` |
+| Get group info / list / members | `qq_get_group_info`, `qq_get_group_list`, `qq_get_group_member_info`, `qq_get_group_member_list` |
 | Get group honors | `qq_get_group_honor_info` |
 | Check @all quota | `qq_get_group_at_all_remain` |
 | Mute member | `qq_mute_group_member` ★ |
-| Kick member | `qq_kick_group_member` ★ |
+| Kick member(s) | `qq_kick_group_member` ★, `qq_kick_group_members` ★ |
 | Set/revoke admin | `qq_set_group_admin` ★ |
 | Rename group | `qq_set_group_name` ★ |
 | Set member card (nickname) | `qq_set_group_card` |
@@ -114,354 +107,31 @@ To send plain text, wrap it: `[{"type": "text", "data": {"text": "your message"}
 | Set group remark | `qq_set_group_remark` |
 | Set group avatar | `qq_set_group_portrait` ★ |
 | Accept/reject group request | `qq_handle_group_request` ★ |
-| Publish group notice | `qq_send_group_notice` ★ |
-| Get group notices | `qq_get_group_notice` |
-| Delete group notice | `qq_delete_group_notice` ★ |
-| Upload file | `qq_upload_file` |
-| List group files | `qq_get_group_root_files` |
-| Get file download URL | `qq_get_group_file_url` |
-| Create folder | `qq_create_group_file_folder` |
-| Delete group file | `qq_delete_group_file` ★ |
-| Download a URL via NapCat | `qq_download_file` |
+| Group notices (公告) | `qq_send_group_notice` ★, `qq_get_group_notice`, `qq_delete_group_notice` ★ |
+| File upload / browse / download | `qq_upload_file`, `qq_get_group_root_files`, `qq_get_group_file_url`, `qq_create_group_file_folder`, `qq_delete_group_file` ★, `qq_delete_group_folder` ★ |
+| Download URL via NapCat | `qq_download_file` |
 | OCR image | `qq_ocr_image` |
 | Translate EN→ZH | `qq_translate_en2zh` |
 | Resolve file/image/voice by id | `qq_get_file`, `qq_get_image`, `qq_get_record` |
 | Who reacted to a message | `qq_get_emoji_likes` |
 | Recent conversations | `qq_get_recent_contact` |
-| Send flash photo (闪照) | `qq_create_flash_task`, `qq_send_flash_msg` |
-| Batch kick members | `qq_kick_group_members` ★ |
-| List muted members | `qq_get_group_shut_list` |
-| Detailed group info | `qq_get_group_detail_info` |
-| Group files in folder | `qq_get_group_files_by_folder` |
-| Group file system usage | `qq_get_group_file_system_info` |
-| Delete group folder | `qq_delete_group_folder` ★ |
+| Flash photo (闪照) | `qq_create_flash_task`, `qq_send_flash_msg` |
+| Group file system info | `qq_get_group_detail_info`, `qq_get_group_shut_list`, `qq_get_group_files_by_folder`, `qq_get_group_file_system_info` |
 | Group todo (待办) | `qq_set_group_todo` ★, `qq_complete_group_todo` |
 | Today's check-in list | `qq_get_group_signed_list` |
-| Friend list by category | `qq_get_friends_with_category` |
-| One-way friends | `qq_get_unidirectional_friend_list` |
+| Friend list by category / one-way | `qq_get_friends_with_category`, `qq_get_unidirectional_friend_list` |
 | Bot avatar / signature / status | `qq_set_qq_avatar` ★, `qq_set_self_longnick` ★, `qq_set_online_status` ★ |
 | Post QQ Space (说说) | `qq_send_qzone_msg` ★ |
 | Group albums | `qq_get_qun_album_list`, `qq_upload_image_to_qun_album` ★ |
 | NapCat version / status | `qq_get_version_info`, `qq_get_status` |
 
-★ = requires admin (see Admin System section)
+★ = requires admin
+
+**For detailed parameter signatures and examples, read `references/tool-details.md`.**
 
 ---
 
-## Tool Details
-
-### Messaging
-
-**Send a message**
-```
-qq_send_message(
-  message_type = "group" | "private",
-  group_id     = "GROUP_ID",          # required when message_type=group
-  user_id      = "QQ_NUMBER",         # required when message_type=private
-  message      = [{"type": "text", "data": {"text": "Hello!"}}]
-)
-```
-
-**Recall a message** (within 2 minutes — QQ protocol limit)
-```
-qq_recall_message(message_id = "MESSAGE_ID")
-```
-
-**React with emoji**
-```
-qq_set_msg_emoji_like(message_id = "MESSAGE_ID", emoji_id = "76")
-```
-Common emoji IDs: 76 = 赞(thumbs up), 66 = 爱心, 277 = 烟花, 212 = 强, 4 = 撇嘴
-
-**Mark a message as read**
-```
-qq_mark_msg_as_read(message_id = "MESSAGE_ID")
-```
-
-**Who reacted to a message**
-```
-qq_get_emoji_likes(message_id = "MESSAGE_ID", emoji_id = "76")
-qq_get_emoji_likes(message_id = "MESSAGE_ID", emoji_id = "76", group_id = "G", count = 0)   # count 0 = all
-```
-
-**Forward a single message**
-```
-qq_forward_message(message_id = "MESSAGE_ID", group_id = "GROUP_ID")
-qq_forward_message(message_id = "MESSAGE_ID", user_id  = "QQ_NUMBER")
-```
-
-**Send merged-forward (合并转发)**
-```
-qq_send_group_forward_msg(
-  group_id = "GROUP_ID",
-  messages = [
-    {
-      "type": "node",
-      "data": {
-        "name": "Display Name",
-        "uin": "QQ_NUMBER",
-        "content": [{"type": "text", "data": {"text": "Message content"}}]
-      }
-    }
-  ]
-)
-```
-
----
-
-### Message History & Essence
-
-**Group message history**
-```
-qq_get_group_msg_history(group_id = "GROUP_ID", count = 20)
-qq_get_group_msg_history(group_id = "GROUP_ID", message_seq = "SEQ", count = 20)
-```
-Use `message_seq` to paginate backwards (fetch messages after that sequence number).
-
-**Friend message history**
-```
-qq_get_friend_msg_history(user_id = "QQ_NUMBER", count = 20)
-qq_get_friend_msg_history(user_id = "QQ_NUMBER", message_seq = "SEQ", count = 20)
-```
-
-**Essence messages (精华消息)**
-```
-qq_get_essence_msg_list(group_id = "GROUP_ID")
-qq_set_essence_msg(message_id = "MESSAGE_ID")      # admin required
-qq_delete_essence_msg(message_id = "MESSAGE_ID")   # admin required
-```
-
----
-
-### User & Friend Info
-
-```
-qq_get_user_info(user_id = "QQ_NUMBER")          # nickname, avatar, etc.
-qq_get_friend_list()                              # bot's friend list
-qq_get_friends_with_category()                    # friend list grouped by category (分组)
-qq_get_unidirectional_friend_list()               # one-way friends (they added you, you didn't)
-qq_get_recent_contact(count = 10)                 # most recent conversations
-qq_like_user(user_id = "QQ_NUMBER", times = 1)   # max 10 likes/day per user
-qq_poke(user_id = "QQ_NUMBER")                   # private poke
-qq_poke(user_id = "QQ_NUMBER", group_id = "G")   # group poke
-qq_set_friend_remark(user_id = "QQ_NUMBER", remark = "Nick")
-qq_delete_friend(user_id = "QQ_NUMBER")           # admin required
-```
-
-**Handle friend request** (arrives as a `[好友申请]` system event; use the flag from that event)
-```
-qq_handle_friend_request(flag = "FLAG_FROM_EVENT", approve = true, remark = "")
-```
-
-**Handle group request / invite** (arrives as `[加群申请]` / `[群邀请]` system events)
-```
-qq_handle_group_request(flag = "FLAG_FROM_EVENT", sub_type = "add", approve = true, reason = "")
-qq_handle_group_request(flag = "FLAG_FROM_EVENT", sub_type = "invite", approve = true, reason = "")
-```
-
-> The adapter surfaces OneBot 11 `request` events (friend requests, group join
-> requests, group invites) to the model automatically as admin-context system
-> events. When you receive one, decide whether to approve/reject and call the
-> matching handler with the `flag` shown in the event text.
-
----
-
-### Group Info
-
-```
-qq_get_group_info(group_id = "GROUP_ID")
-qq_get_group_list()
-qq_get_group_member_info(group_id = "GROUP_ID", user_id = "QQ_NUMBER")
-qq_get_group_member_list(group_id = "GROUP_ID")
-qq_get_group_honor_info(group_id = "GROUP_ID", type = "all")
-qq_get_group_at_all_remain(group_id = "GROUP_ID")
-qq_get_group_detail_info(group_id = "GROUP_ID")          # member count, whole-ban state, remark
-qq_get_group_shut_list(group_id = "GROUP_ID")            # currently muted members
-qq_get_group_signed_list(group_id = "GROUP_ID")          # today's check-in (打卡) list
-```
-
-`type` for honor info: `talkative` (龙王) | `performer` | `legend` | `strong_newbie` | `emotion` | `all`
-
----
-
-### Group Management (admin-required ★)
-
-**Mute / unmute a member**
-```
-qq_mute_group_member(group_id = "G", user_id = "U", duration = 600)
-qq_mute_group_member(group_id = "G", user_id = "U", duration = 0)   # unmute
-```
-Duration is seconds. Common durations: 600 (10 min), 3600 (1h), 86400 (1 day), 2592000 (30 days)
-
-**Kick**
-```
-qq_kick_group_member(group_id = "G", user_id = "U", reject_add_request = false)
-qq_kick_group_members(group_id = "G", user_id = ["U1", "U2"], reject_add_request = false)   # batch kick
-```
-
-**Admin role**
-```
-qq_set_group_admin(group_id = "G", user_id = "U", enable = true)   # grant
-qq_set_group_admin(group_id = "G", user_id = "U", enable = false)  # revoke
-```
-Only the group owner can grant/revoke admin.
-
-**Rename, card, title**
-```
-qq_set_group_name(group_id = "G", group_name = "New Name")
-qq_set_group_card(group_id = "G", user_id = "U", card = "Nickname")   # blank to reset
-qq_set_group_special_title(group_id = "G", user_id = "U", special_title = "VIP")  # owner only
-```
-
-**Whole-group mute**
-```
-qq_set_group_whole_ban(group_id = "G", enable = true)
-qq_set_group_whole_ban(group_id = "G", enable = false)
-```
-
-**Leave or dismiss**
-```
-qq_leave_group(group_id = "G")                         # leave
-qq_leave_group(group_id = "G", is_dismiss = true)      # dismiss (bot must be owner)
-```
-
-**Group avatar**
-```
-qq_set_group_portrait(group_id = "G", file = "/path/to/avatar.jpg")
-```
-
-**Handle join request** (from a `group_request` event)
-```
-qq_handle_group_request(flag = "FLAG", sub_type = "add",    approve = true)
-qq_handle_group_request(flag = "FLAG", sub_type = "invite", approve = true)
-qq_handle_group_request(flag = "FLAG", sub_type = "add",    approve = false, reason = "Not accepting")
-```
-
----
-
-### Group Notices (公告)
-
-```
-qq_send_group_notice(group_id = "G", content = "Announcement text")         # admin ★
-qq_send_group_notice(group_id = "G", content = "With image", image = "/path/img.jpg")
-qq_get_group_notice(group_id = "G")
-qq_delete_group_notice(group_id = "G", notice_id = "NOTICE_ID")             # admin ★
-```
-
----
-
-### File Operations
-
-**Upload**
-```
-qq_upload_file(file = "/path/to/file.pdf", group_id = "G")        # to group
-qq_upload_file(file = "/path/to/file.zip", user_id = "QQ_NUMBER") # to private chat
-qq_upload_file(file = "/path/to/file.pdf", group_id = "G", name = "report.pdf", folder_id = "FOLDER_ID")
-```
-
-**Browse and download group files**
-```
-qq_get_group_root_files(group_id = "G")                            # list root
-qq_get_group_file_url(group_id = "G", file_id = "FILE_ID")         # get download URL
-qq_create_group_file_folder(group_id = "G", name = "Docs")
-qq_delete_group_file(group_id = "G", file_id = "FILE_ID")          # admin ★
-qq_get_group_files_by_folder(group_id = "G", folder_id = "/")      # files in a folder
-qq_get_group_file_system_info(group_id = "G")                        # space used / limit
-qq_delete_group_folder(group_id = "G", folder_id = "FOLDER_ID")     # admin ★
-```
-
-**Download any URL through NapCat** (useful when direct download is unavailable)
-```
-qq_download_file(url = "https://example.com/file.pdf")
-# Returns: {"file": "/local/path/to/downloaded/file"}
-```
-
----
-
-### Media & Content
-
-**Resolve a file/image/voice by id** (received messages carry media as ids)
-```
-qq_get_file(file = "FILE_ID")                          # file id, local path or URL
-qq_get_image(file = "IMG_ID")                          # image id, local path or URL
-qq_get_record(file = "RECORD_ID", out_format = "mp3") # voice; ffmpeg converts silk→mp3/wav
-```
-
-**Send a flash photo (闪照)**
-```
-qq_create_flash_task(files = ["/path/to/img.jpg"], name = "")   # → fileset_id
-qq_send_flash_msg(fileset_id = "FILESET_ID", group_id = "G")    # to a group
-qq_send_flash_msg(fileset_id = "FILESET_ID", user_id = "QQ")    # or to a private chat
-```
-
----
-
-### Misc
-
-**OCR an image**
-```
-qq_ocr_image(image = "/path/to/image.jpg")
-qq_ocr_image(image = "https://example.com/img.png")
-# Returns: {"texts": [...], "language": "zh"}
-```
-
-**Translate English to Chinese** (word list only, not full sentences)
-```
-qq_translate_en2zh(words = ["hello", "world"])
-```
-
-**Group check-in (打卡)**
-```
-qq_set_group_sign(group_id = "G")
-```
-
-**Set group remark (personal note, not visible to others)**
-```
-qq_set_group_remark(group_id = "G", remark = "Work group")
-```
-
----
-
-### Group Todo (待办)
-
-```
-qq_set_group_todo(group_id = "G", message_id = "MSG_ID")         # admin ★, pin a message as a todo
-qq_complete_group_todo(group_id = "G", message_id = "MSG_ID")    # mark a todo done
-```
-
----
-
-### Bot Profile, Qzone, Albums & System
-
-**Bot profile** (admin ★)
-```
-qq_set_qq_avatar(file = "/path/to/avatar.jpg")        # change QQ avatar (path, URL or base64://)
-qq_set_self_longnick(long_nick = "New signature")     # personal signature (个性签名)
-qq_set_online_status(status = 10, ext_status = 0, battery_status = 0)
-# status: 10=在线, 30=离开, 40=隐身, 50=忙碌, 60=Q我吧, 70=请勿打扰; ext_status e.g. 1028=听歌中
-```
-
-**Post QQ Space (说说)**
-```
-qq_send_qzone_msg(content = "Post text", images = ["/path/img.jpg"], ugc_right = 1)
-# ugc_right: 1 all | 4 friends | 16 some friends | 64 self | 128 exclude some friends
-```
-
-**Group albums (相册)**
-```
-qq_get_qun_album_list(group_id = "G")                                                # list albums
-qq_upload_image_to_qun_album(group_id = "G", album_id = "ALBUM_ID", file = "/path/img.jpg")   # admin ★
-```
-
-**NapCat version / status**
-```
-qq_get_version_info()      # NapCat version
-qq_get_status()            # runtime / connection status
-```
-
----
-
-## Common Workflows
+## Core Workflows
 
 ### Reply to a message in a group
 The incoming event includes `message_id` and `group_id`. Quote-reply by prepending a reply segment:
@@ -520,12 +190,23 @@ Parse the returned `messages` array. Each entry has: `message_id`, `sender.user_
 
 ---
 
-## Protocol Limits & Notes
+## Agent Workflow
+
+1. Identify whether the request is for a **group** or **private** conversation from context.
+2. For **management actions** (mute, kick, admin, notice, etc.), confirm the sender is an admin before calling — the tool will reject non-admins anyway, but confirming first avoids a wasted call.
+3. For **irreversible actions** (kick with `reject_add_request=true`, dismiss group, delete friend), briefly confirm with the user before proceeding.
+4. When the user asks to "reply" to a message, use a `reply` segment pointing to the original `message_id` — do not just send plain text.
+5. For bulk history reads, use `qq_get_group_msg_history` with `count ≤ 50` to avoid overloading context.
+6. When sending images or files, prefer local paths if the file is already on disk — NapCat can serve local files directly, avoiding an extra HTTP round-trip. Use URLs only when the file is remote and not worth downloading first.
+7. The `message_id` in incoming events is the value to pass to `qq_recall_message`, `qq_set_essence_msg`, etc.
+
+---
+
+## Protocol Limits
 
 | Constraint | Detail |
 |---|---|
 | Recall window | **2 minutes** — `qq_recall_message` fails after that |
-| Profile likes | Max **10 per day** per target user (`qq_like_user times ≤ 10`) |
 | @all quota | Limited per group per day; check with `qq_get_group_at_all_remain` |
 | Special title | Bot must be **group owner** (not just admin) |
 | Group dismiss | Bot must be **group owner** (`is_dismiss=true`) |
@@ -535,26 +216,6 @@ Parse the returned `messages` array. Each entry has: `message_id`, `sender.user_
 
 ---
 
-## Agent Workflow
-
-1. Identify whether the request is for a **group** or **private** conversation from context.
-2. For **management actions** (mute, kick, admin, notice, etc.), confirm the sender is an admin before calling — the tool will reject non-admins anyway, but confirming first avoids a wasted call.
-3. For **irreversible actions** (kick with `reject_add_request=true`, dismiss group, delete friend), briefly confirm with the user before proceeding.
-4. When the user asks to "reply" to a message, use a `reply` segment pointing to the original `message_id` — do not just send plain text.
-5. For bulk history reads, use `qq_get_group_msg_history` with `count ≤ 50` to avoid overloading context.
-6. When sending images or files, prefer local paths if the file is already on disk; use URLs only when the file is remote.
-7. The `message_id` in incoming events is the value to pass to `qq_recall_message`, `qq_set_essence_msg`, etc.
-
----
-
 ## Error Handling
 
-| Symptom | Likely Cause | Fix |
-|---|---|---|
-| `NapCat 尚未连接` | Adapter not connected (no reverse-WS dial-in) | Check NapCat's reverse-WS item points at `ws://127.0.0.1:{ws_port}{ws_path}` (Universal role) and the gateway is running |
-| `Permission denied: only admins can use this command` | Caller not in admins list | Add caller's QQ to `admins` in config, or leave `admins: []` for open mode |
-| `OneBot API error: RETCODE=100` | Invalid parameter (wrong ID type, missing field) | Check group_id/user_id are numeric strings |
-| `OneBot API error: RETCODE=1000` | NapCat internal error (usually rate limit or QQ restrictions) | Wait and retry; check if bot has sufficient permissions in the group |
-| Recall fails | Message older than 2 minutes, or not sent by the bot | QQ protocol limitation — cannot recall others' messages |
-| Admin grant fails | Bot is not the group owner | Only owners can manage admins |
-| File upload fails | File too large or NapCat lacks disk space | Check file size; NapCat downloads to `~/Napcat` |
+For connection issues, permission errors, and API error codes, read `references/error-handling.md`.
